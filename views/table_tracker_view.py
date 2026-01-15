@@ -580,35 +580,6 @@ class TableTrackerView(ctk.CTkFrame):
                 text_color="#ffd700"
             ).pack(pady=5, padx=8)
             
-            # Timer
-            timer_frame = ctk.CTkFrame(controls_frame, fg_color="#1a1a2e", corner_radius=8)
-            timer_frame.pack(side="left", padx=2)
-            
-            timer_label = ctk.CTkLabel(
-                timer_frame,
-                text="-- min",
-                font=get_font(11),
-                text_color="#aaaaaa"
-            )
-            timer_label.pack(pady=5, padx=8)
-            
-            self.timer_labels[table_num] = {
-                'label': timer_label,
-                'start_time': match.get('date')
-            }
-            
-            # Complete button
-            ctk.CTkButton(
-                controls_frame,
-                text="Done",
-                font=get_font(11),
-                height=28,
-                width=60,
-                fg_color="#4CAF50",
-                hover_color="#388E3C",
-                command=lambda m=match, t=table_num: self.complete_match_on_table(m, t)
-            ).pack(side="right", padx=2)
-            
         else:
             # Empty state
             empty_frame = ctk.CTkFrame(frame, fg_color="transparent")
