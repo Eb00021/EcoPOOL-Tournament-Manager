@@ -1,0 +1,14 @@
+# EcoPOOL League Manager - Dependencies
+# Python 3.10+ recommended
+
+# Modern GUI framework
+customtkinter>=5.2.0
+
+# Image handling for pool table visualization
+Pillow>=10.0.0
+
+# PDF export for scorecards
+reportlab>=4.0.0
+
+# Data export
+openpyxl>=3.1.0  # Excel export
