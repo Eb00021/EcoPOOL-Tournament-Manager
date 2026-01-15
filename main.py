@@ -207,7 +207,7 @@ class EcoPoolApp(ctk.CTk):
         
         ctk.CTkButton(
             data_frame,
-            text="🆕 New Pool Night",
+            text="New Pool Night",
             font=get_font(11),
             height=30,
             fg_color="#c44536",
@@ -286,7 +286,7 @@ class EcoPoolApp(ctk.CTk):
         # Version info at bottom (fixed)
         ctk.CTkLabel(
             self.sidebar,
-            text="v2.0 - WVU EcoCAR",
+            text="v3.0 - WVU EcoCAR",
             font=get_font(10),
             text_color="#555555"
         ).pack(side="bottom", pady=8)

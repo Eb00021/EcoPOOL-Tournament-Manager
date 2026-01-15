@@ -5,8 +5,8 @@ SQLite database for persistent storage of players, matches, and statistics.
 
 import sqlite3
 from datetime import datetime
-from typing import Optional
-from dataclasses import dataclass
+from typing import Optional, List
+from dataclasses import dataclass, field
 import json
 
 
@@ -21,8 +21,10 @@ class Player:
     # Stats (computed from matches)
     games_played: int = 0
     games_won: int = 0
+    games_lost: int = 0
     total_points: int = 0
     golden_breaks: int = 0
+    eight_ball_sinks: int = 0  # Legal 8-ball wins
     
     @property
     def win_rate(self) -> float:
@@ -38,6 +40,36 @@ class Player:
 
 
 @dataclass
+class Season:
+    id: Optional[int]
+    name: str
+    start_date: str
+    end_date: str = ""
+    is_active: bool = True
+    notes: str = ""
+
+
+@dataclass
+class Pair:
+    id: Optional[int]
+    league_night_id: int
+    player1_id: int
+    player2_id: Optional[int]  # None for lone wolf
+    pair_name: str = ""
+    
+
+@dataclass
+class BuyIn:
+    id: Optional[int]
+    league_night_id: int
+    player_id: int
+    amount: float = 0.0
+    paid: bool = False
+    venmo_confirmed: bool = False
+    notes: str = ""
+
+
+@dataclass
 class Match:
     id: Optional[int]
     date: str
@@ -48,6 +80,12 @@ class Match:
     best_of: int = 3
     is_finals: bool = False
     is_complete: bool = False
+    # New fields for queue system
+    pair1_id: Optional[int] = None
+    pair2_id: Optional[int] = None
+    queue_position: int = 0
+    status: str = "queued"  # 'queued', 'live', 'completed'
+    season_id: Optional[int] = None
     
 
 @dataclass
@@ -101,6 +139,18 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             pass  # Column already exists
         
+        # Seasons table (NEW)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS seasons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                notes TEXT DEFAULT ''
+            )
+        ''')
+        
         # League nights table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS league_nights (
@@ -108,7 +158,50 @@ class DatabaseManager:
                 date TEXT NOT NULL,
                 location TEXT DEFAULT 'The Met Pool Hall',
                 buy_in REAL DEFAULT 0,
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                season_id INTEGER,
+                table_count INTEGER DEFAULT 3,
+                FOREIGN KEY (season_id) REFERENCES seasons(id)
+            )
+        ''')
+        
+        # Add new columns to league_nights if they don't exist
+        try:
+            cursor.execute("ALTER TABLE league_nights ADD COLUMN season_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE league_nights ADD COLUMN table_count INTEGER DEFAULT 3")
+        except sqlite3.OperationalError:
+            pass
+        
+        # League night pairs table (NEW) - Fixed pairs for the night
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS league_night_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                league_night_id INTEGER NOT NULL,
+                player1_id INTEGER NOT NULL,
+                player2_id INTEGER,
+                pair_name TEXT DEFAULT '',
+                FOREIGN KEY (league_night_id) REFERENCES league_nights(id),
+                FOREIGN KEY (player1_id) REFERENCES players(id),
+                FOREIGN KEY (player2_id) REFERENCES players(id)
+            )
+        ''')
+        
+        # League night buy-ins table (NEW)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS league_night_buyins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                league_night_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                amount REAL DEFAULT 0,
+                paid INTEGER DEFAULT 0,
+                venmo_confirmed INTEGER DEFAULT 0,
+                notes TEXT DEFAULT '',
+                FOREIGN KEY (league_night_id) REFERENCES league_nights(id),
+                FOREIGN KEY (player_id) REFERENCES players(id),
+                UNIQUE(league_night_id, player_id)
             )
         ''')
         
@@ -126,13 +219,31 @@ class DatabaseManager:
                 best_of INTEGER DEFAULT 3,
                 is_finals INTEGER DEFAULT 0,
                 is_complete INTEGER DEFAULT 0,
+                pair1_id INTEGER,
+                pair2_id INTEGER,
+                queue_position INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'queued',
+                season_id INTEGER,
                 FOREIGN KEY (league_night_id) REFERENCES league_nights(id),
                 FOREIGN KEY (team1_player1_id) REFERENCES players(id),
                 FOREIGN KEY (team1_player2_id) REFERENCES players(id),
                 FOREIGN KEY (team2_player1_id) REFERENCES players(id),
-                FOREIGN KEY (team2_player2_id) REFERENCES players(id)
+                FOREIGN KEY (team2_player2_id) REFERENCES players(id),
+                FOREIGN KEY (pair1_id) REFERENCES league_night_pairs(id),
+                FOREIGN KEY (pair2_id) REFERENCES league_night_pairs(id),
+                FOREIGN KEY (season_id) REFERENCES seasons(id)
             )
         ''')
+        
+        # Add new columns to matches if they don't exist (migration)
+        for col, default in [("pair1_id", "INTEGER"), ("pair2_id", "INTEGER"), 
+                             ("queue_position", "INTEGER DEFAULT 0"), 
+                             ("status", "TEXT DEFAULT 'queued'"),
+                             ("season_id", "INTEGER")]:
+            try:
+                cursor.execute(f"ALTER TABLE matches ADD COLUMN {col} {default}")
+            except sqlite3.OperationalError:
+                pass
         
         # Games table (individual games within a match)
         cursor.execute('''
@@ -301,8 +412,10 @@ class DatabaseManager:
                 stats = stats_cache[player.id]
                 player.games_played = stats['games_played']
                 player.games_won = stats['games_won']
+                player.games_lost = stats['games_played'] - stats['games_won']
                 player.total_points = stats['total_points']
                 player.golden_breaks = stats['golden_breaks']
+                player.eight_ball_sinks = stats.get('eight_ball_sinks', 0)
             players.append(player)
         return players
     
@@ -320,13 +433,13 @@ class DatabaseManager:
                 m.team1_player1_id, m.team1_player2_id, 
                 m.team2_player1_id, m.team2_player2_id,
                 g.team1_score, g.team2_score, g.winner_team, 
-                g.golden_break, g.breaking_team
+                g.golden_break, g.breaking_team, g.balls_pocketed
             FROM matches m
             JOIN games g ON g.match_id = m.id
             WHERE g.winner_team > 0
         ''')
         
-        stats = {}  # player_id -> {games_played, games_won, total_points, golden_breaks}
+        stats = {}  # player_id -> {games_played, games_won, total_points, golden_breaks, eight_ball_sinks}
         
         for row in cursor.fetchall():
             # Process each team's players
@@ -344,27 +457,36 @@ class DatabaseManager:
             except (KeyError, IndexError):
                 breaking_team = 1
             
+            # Check for legal 8-ball pocket (winner who cleared their balls)
+            # This is tracked as: team won + team1_score >= 10 (7 balls + 8-ball = 10 pts)
+            team1_legal_8ball = row['winner_team'] == 1 and row['team1_score'] >= 10
+            team2_legal_8ball = row['winner_team'] == 2 and row['team2_score'] >= 10
+            
             # Update stats for team 1 players
             for pid in team1_players:
                 if pid not in stats:
-                    stats[pid] = {'games_played': 0, 'games_won': 0, 'total_points': 0, 'golden_breaks': 0}
+                    stats[pid] = {'games_played': 0, 'games_won': 0, 'total_points': 0, 'golden_breaks': 0, 'eight_ball_sinks': 0}
                 stats[pid]['games_played'] += 1
                 stats[pid]['total_points'] += row['team1_score']
                 if row['winner_team'] == 1:
                     stats[pid]['games_won'] += 1
                 if row['golden_break'] and breaking_team == 1:
                     stats[pid]['golden_breaks'] += 1
+                if team1_legal_8ball:
+                    stats[pid]['eight_ball_sinks'] += 1
             
             # Update stats for team 2 players
             for pid in team2_players:
                 if pid not in stats:
-                    stats[pid] = {'games_played': 0, 'games_won': 0, 'total_points': 0, 'golden_breaks': 0}
+                    stats[pid] = {'games_played': 0, 'games_won': 0, 'total_points': 0, 'golden_breaks': 0, 'eight_ball_sinks': 0}
                 stats[pid]['games_played'] += 1
                 stats[pid]['total_points'] += row['team2_score']
                 if row['winner_team'] == 2:
                     stats[pid]['games_won'] += 1
                 if row['golden_break'] and breaking_team == 2:
                     stats[pid]['golden_breaks'] += 1
+                if team2_legal_8ball:
+                    stats[pid]['eight_ball_sinks'] += 1
         
         return stats
     
@@ -387,6 +509,7 @@ class DatabaseManager:
         games_won = 0
         total_points = 0
         golden_breaks = 0
+        eight_ball_sinks = 0
         
         for row in cursor.fetchall():
             games_played += 1
@@ -402,36 +525,48 @@ class DatabaseManager:
                 total_points += row['team1_score']
                 if row['winner_team'] == 1:
                     games_won += 1
+                    # Legal 8-ball if won with 10+ points (7 balls + 8-ball)
+                    if row['team1_score'] >= 10:
+                        eight_ball_sinks += 1
                 if row['golden_break'] and breaking_team == 1:
                     golden_breaks += 1
             else:
                 total_points += row['team2_score']
                 if row['winner_team'] == 2:
                     games_won += 1
+                    if row['team2_score'] >= 10:
+                        eight_ball_sinks += 1
                 if row['golden_break'] and breaking_team == 2:
                     golden_breaks += 1
         
         player.games_played = games_played
         player.games_won = games_won
+        player.games_lost = games_played - games_won
         player.total_points = total_points
         player.golden_breaks = golden_breaks
+        player.eight_ball_sinks = eight_ball_sinks
     
     # ============ Match Operations ============
     
     def create_match(self, team1_p1: int, team1_p2: Optional[int],
                      team2_p1: int, team2_p2: Optional[int],
                      table_number: int = 1, best_of: int = 3,
-                     is_finals: bool = False, league_night_id: Optional[int] = None) -> int:
+                     is_finals: bool = False, league_night_id: Optional[int] = None,
+                     pair1_id: Optional[int] = None, pair2_id: Optional[int] = None,
+                     queue_position: int = 0, status: str = "queued",
+                     season_id: Optional[int] = None) -> int:
         """Create a new match. Returns match ID."""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO matches 
             (league_night_id, team1_player1_id, team1_player2_id, 
-             team2_player1_id, team2_player2_id, table_number, best_of, is_finals)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             team2_player1_id, team2_player2_id, table_number, best_of, is_finals,
+             pair1_id, pair2_id, queue_position, status, season_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (league_night_id, team1_p1, team1_p2, team2_p1, team2_p2, 
-              table_number, best_of, 1 if is_finals else 0))
+              table_number, best_of, 1 if is_finals else 0,
+              pair1_id, pair2_id, queue_position, status, season_id))
         conn.commit()
         return cursor.lastrowid
     
@@ -565,16 +700,16 @@ class DatabaseManager:
     
     # ============ Leaderboard ============
     
-    def get_leaderboard(self, sort_by: str = "wins") -> list[Player]:
-        """Get players sorted by performance."""
+    def get_leaderboard(self, sort_by: str = "points") -> list[Player]:
+        """Get players sorted by performance. Default sort is by total points."""
         players = self.get_all_players(active_only=True)
         
-        if sort_by == "wins":
+        if sort_by == "points":
+            players.sort(key=lambda p: (-p.total_points, -p.games_won))
+        elif sort_by == "wins":
             players.sort(key=lambda p: (-p.games_won, -p.win_rate))
         elif sort_by == "win_rate":
             players.sort(key=lambda p: (-p.win_rate, -p.games_won))
-        elif sort_by == "points":
-            players.sort(key=lambda p: (-p.total_points, -p.games_won))
         elif sort_by == "avg_points":
             players.sort(key=lambda p: (-p.avg_points, -p.games_won))
         
@@ -637,16 +772,43 @@ class DatabaseManager:
     # ============ League Night Operations ============
     
     def create_league_night(self, date: str, location: str = "The Met Pool Hall",
-                            buy_in: float = 0) -> int:
+                            buy_in: float = 0, season_id: Optional[int] = None,
+                            table_count: int = 3) -> int:
         """Create a new league night."""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO league_nights (date, location, buy_in) VALUES (?, ?, ?)",
-            (date, location, buy_in)
+            "INSERT INTO league_nights (date, location, buy_in, season_id, table_count) VALUES (?, ?, ?, ?, ?)",
+            (date, location, buy_in, season_id, table_count)
         )
         conn.commit()
         return cursor.lastrowid
+    
+    def get_league_night(self, league_night_id: int) -> Optional[dict]:
+        """Get a league night by ID."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM league_nights WHERE id = ?", (league_night_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def get_current_league_night(self) -> Optional[dict]:
+        """Get the most recent league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM league_nights ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def update_league_night_table_count(self, league_night_id: int, table_count: int):
+        """Update the table count for a league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE league_nights SET table_count = ? WHERE id = ?",
+            (table_count, league_night_id)
+        )
+        conn.commit()
     
     def clear_matches(self):
         """Clear all matches and games (for new pool night). Keeps players."""
@@ -654,6 +816,8 @@ class DatabaseManager:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM games")
         cursor.execute("DELETE FROM matches")
+        cursor.execute("DELETE FROM league_night_buyins")
+        cursor.execute("DELETE FROM league_night_pairs")
         cursor.execute("DELETE FROM league_nights")
         conn.commit()
     
@@ -664,9 +828,450 @@ class DatabaseManager:
         # First clear matches since they reference players
         cursor.execute("DELETE FROM games")
         cursor.execute("DELETE FROM matches")
+        cursor.execute("DELETE FROM league_night_buyins")
+        cursor.execute("DELETE FROM league_night_pairs")
         cursor.execute("DELETE FROM rsvps")
         cursor.execute("DELETE FROM players")
         conn.commit()
+    
+    # ============ Season Operations ============
+    
+    def create_season(self, name: str, start_date: str = None) -> int:
+        """Create a new season. Returns season ID."""
+        if start_date is None:
+            start_date = datetime.now().strftime("%Y-%m-%d")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Deactivate other seasons
+        cursor.execute("UPDATE seasons SET is_active = 0")
+        cursor.execute(
+            "INSERT INTO seasons (name, start_date, is_active) VALUES (?, ?, 1)",
+            (name, start_date)
+        )
+        conn.commit()
+        return cursor.lastrowid
+    
+    def get_active_season(self) -> Optional[Season]:
+        """Get the currently active season."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM seasons WHERE is_active = 1 LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            return Season(
+                id=row['id'],
+                name=row['name'],
+                start_date=row['start_date'],
+                end_date=row['end_date'] or "",
+                is_active=bool(row['is_active']),
+                notes=row['notes'] or ""
+            )
+        return None
+    
+    def get_all_seasons(self) -> list[Season]:
+        """Get all seasons."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM seasons ORDER BY start_date DESC")
+        seasons = []
+        for row in cursor.fetchall():
+            seasons.append(Season(
+                id=row['id'],
+                name=row['name'],
+                start_date=row['start_date'],
+                end_date=row['end_date'] or "",
+                is_active=bool(row['is_active']),
+                notes=row['notes'] or ""
+            ))
+        return seasons
+    
+    def set_active_season(self, season_id: int):
+        """Set a season as active."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE seasons SET is_active = 0")
+        cursor.execute("UPDATE seasons SET is_active = 1 WHERE id = ?", (season_id,))
+        conn.commit()
+    
+    def end_season(self, season_id: int, end_date: str = None):
+        """End a season."""
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE seasons SET end_date = ?, is_active = 0 WHERE id = ?",
+            (end_date, season_id)
+        )
+        conn.commit()
+    
+    # ============ Pair Operations ============
+    
+    def create_pair(self, league_night_id: int, player1_id: int, 
+                    player2_id: Optional[int] = None, pair_name: str = "") -> int:
+        """Create a pair for a league night. Returns pair ID."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO league_night_pairs (league_night_id, player1_id, player2_id, pair_name) VALUES (?, ?, ?, ?)",
+            (league_night_id, player1_id, player2_id, pair_name)
+        )
+        conn.commit()
+        return cursor.lastrowid
+    
+    def get_pairs_for_night(self, league_night_id: int) -> list[dict]:
+        """Get all pairs for a league night with player details."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT p.*, 
+                   p1.name as player1_name, p1.profile_picture as player1_pic,
+                   p2.name as player2_name, p2.profile_picture as player2_pic
+            FROM league_night_pairs p
+            LEFT JOIN players p1 ON p.player1_id = p1.id
+            LEFT JOIN players p2 ON p.player2_id = p2.id
+            WHERE p.league_night_id = ?
+        ''', (league_night_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_pair(self, pair_id: int) -> Optional[dict]:
+        """Get a pair by ID with player details."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT p.*, 
+                   p1.name as player1_name, p1.profile_picture as player1_pic,
+                   p2.name as player2_name, p2.profile_picture as player2_pic
+            FROM league_night_pairs p
+            LEFT JOIN players p1 ON p.player1_id = p1.id
+            LEFT JOIN players p2 ON p.player2_id = p2.id
+            WHERE p.id = ?
+        ''', (pair_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def delete_pairs_for_night(self, league_night_id: int):
+        """Delete all pairs for a league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM league_night_pairs WHERE league_night_id = ?", (league_night_id,))
+        conn.commit()
+    
+    def update_pair_name(self, pair_id: int, pair_name: str):
+        """Update a pair's name."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE league_night_pairs SET pair_name = ? WHERE id = ?", (pair_name, pair_id))
+        conn.commit()
+    
+    # ============ Buy-In Operations ============
+    
+    def set_buyin(self, league_night_id: int, player_id: int, amount: float,
+                  paid: bool = False, venmo_confirmed: bool = False, notes: str = ""):
+        """Set or update a player's buy-in for a league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO league_night_buyins (league_night_id, player_id, amount, paid, venmo_confirmed, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(league_night_id, player_id) 
+            DO UPDATE SET amount = excluded.amount, paid = excluded.paid, 
+                         venmo_confirmed = excluded.venmo_confirmed, notes = excluded.notes
+        ''', (league_night_id, player_id, amount, 1 if paid else 0, 
+              1 if venmo_confirmed else 0, notes))
+        conn.commit()
+    
+    def mark_buyin_paid(self, league_night_id: int, player_id: int, paid: bool = True,
+                        venmo_confirmed: bool = False):
+        """Mark a player's buy-in as paid."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE league_night_buyins SET paid = ?, venmo_confirmed = ?
+            WHERE league_night_id = ? AND player_id = ?
+        ''', (1 if paid else 0, 1 if venmo_confirmed else 0, league_night_id, player_id))
+        conn.commit()
+    
+    def get_buyins_for_night(self, league_night_id: int) -> list[dict]:
+        """Get all buy-ins for a league night with player details."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT b.*, p.name as player_name, p.venmo as player_venmo
+            FROM league_night_buyins b
+            JOIN players p ON b.player_id = p.id
+            WHERE b.league_night_id = ?
+        ''', (league_night_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_total_pot(self, league_night_id: int) -> tuple[float, float]:
+        """Get total pot and paid amount for a league night.
+        Returns (total_expected, total_paid)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COALESCE(SUM(amount), 0) as total,
+                   COALESCE(SUM(CASE WHEN paid = 1 THEN amount ELSE 0 END), 0) as paid
+            FROM league_night_buyins WHERE league_night_id = ?
+        ''', (league_night_id,))
+        row = cursor.fetchone()
+        return (row['total'], row['paid'])
+    
+    # ============ Queue Operations ============
+    
+    def get_queued_matches(self, league_night_id: int) -> list[dict]:
+        """Get all queued matches for a league night, ordered by position."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.status = 'queued'
+            ORDER BY m.queue_position
+        ''', (league_night_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_live_matches(self, league_night_id: int) -> list[dict]:
+        """Get all live matches for a league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.status = 'live'
+            ORDER BY m.table_number
+        ''', (league_night_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_matches_by_status(self, league_night_id: int, status: str) -> list[dict]:
+        """Get matches filtered by status."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.status = ?
+            ORDER BY m.queue_position, m.table_number
+        ''', (league_night_id, status))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def start_match(self, match_id: int, table_number: int):
+        """Move a match from queued to live on a table."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE matches SET status = 'live', table_number = ? WHERE id = ?",
+            (table_number, match_id)
+        )
+        conn.commit()
+    
+    def complete_match_with_status(self, match_id: int):
+        """Mark a match as completed and update status."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE matches SET status = 'completed', is_complete = 1 WHERE id = ?",
+            (match_id,)
+        )
+        conn.commit()
+    
+    def get_next_queued_match(self, league_night_id: int) -> Optional[dict]:
+        """Get the next match in the queue."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.status = 'queued'
+            ORDER BY m.queue_position
+            LIMIT 1
+        ''', (league_night_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def advance_queue(self, league_night_id: int, table_number: int) -> Optional[dict]:
+        """Move the next queued match to a specific table.
+        Returns the match that was moved, or None if queue is empty."""
+        next_match = self.get_next_queued_match(league_night_id)
+        if next_match:
+            self.start_match(next_match['id'], table_number)
+            return next_match
+        return None
+    
+    def update_match_status(self, match_id: int, status: str):
+        """Update the status of a match."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE matches SET status = ? WHERE id = ?", (status, match_id))
+        if status == 'completed':
+            cursor.execute("UPDATE matches SET is_complete = 1 WHERE id = ?", (match_id,))
+        conn.commit()
+    
+    # ============ Season-Aware Stats ============
+    
+    def get_player_stats_for_season(self, player_id: int, season_id: Optional[int] = None) -> dict:
+        """Get player statistics for a specific season (or all time if season_id is None)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        season_filter = "AND m.season_id = ?" if season_id else ""
+        # Build params list - player_id repeated for each placeholder
+        pid = player_id
+        base_params = [pid, pid, pid, pid,  # games_won check
+                       pid, pid,              # total_points check  
+                       pid, pid, pid, pid,    # golden_breaks check
+                       pid, pid, pid, pid]    # WHERE clause
+        if season_id:
+            base_params.append(season_id)
+        
+        cursor.execute(f'''
+            SELECT 
+                COUNT(*) as games_played,
+                SUM(CASE 
+                    WHEN (m.team1_player1_id = ? OR m.team1_player2_id = ?) AND g.winner_team = 1 THEN 1
+                    WHEN (m.team2_player1_id = ? OR m.team2_player2_id = ?) AND g.winner_team = 2 THEN 1
+                    ELSE 0 
+                END) as games_won,
+                SUM(CASE 
+                    WHEN m.team1_player1_id = ? OR m.team1_player2_id = ? THEN g.team1_score
+                    ELSE g.team2_score 
+                END) as total_points,
+                SUM(CASE WHEN g.golden_break = 1 AND (
+                    (g.breaking_team = 1 AND (m.team1_player1_id = ? OR m.team1_player2_id = ?)) OR
+                    (g.breaking_team = 2 AND (m.team2_player1_id = ? OR m.team2_player2_id = ?))
+                ) THEN 1 ELSE 0 END) as golden_breaks
+            FROM matches m
+            JOIN games g ON g.match_id = m.id
+            WHERE (m.team1_player1_id = ? OR m.team1_player2_id = ? 
+                   OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+            AND g.winner_team > 0
+            {season_filter}
+        ''', base_params)
+        
+        row = cursor.fetchone()
+        games_played = row['games_played'] or 0
+        games_won = row['games_won'] or 0
+        
+        return {
+            'games_played': games_played,
+            'games_won': games_won,
+            'games_lost': games_played - games_won,
+            'total_points': row['total_points'] or 0,
+            'golden_breaks': row['golden_breaks'] or 0,
+            'win_rate': (games_won / games_played * 100) if games_played > 0 else 0,
+            'avg_points': (row['total_points'] or 0) / games_played if games_played > 0 else 0
+        }
+    
+    def get_leaderboard_for_season(self, season_id: Optional[int] = None, 
+                                   sort_by: str = "points") -> list[dict]:
+        """Get leaderboard for a specific season, sorted by the specified field.
+        Default sort is by total points (not wins)."""
+        players = self.get_all_players(active_only=True)
+        
+        leaderboard = []
+        for player in players:
+            stats = self.get_player_stats_for_season(player.id, season_id)
+            leaderboard.append({
+                'player': player,
+                'games_played': stats['games_played'],
+                'games_won': stats['games_won'],
+                'games_lost': stats['games_lost'],
+                'total_points': stats['total_points'],
+                'golden_breaks': stats['golden_breaks'],
+                'win_rate': stats['win_rate'],
+                'avg_points': stats['avg_points']
+            })
+        
+        # Sort by specified field (default: points)
+        if sort_by == "points":
+            leaderboard.sort(key=lambda x: (-x['total_points'], -x['games_won']))
+        elif sort_by == "wins":
+            leaderboard.sort(key=lambda x: (-x['games_won'], -x['win_rate']))
+        elif sort_by == "win_rate":
+            leaderboard.sort(key=lambda x: (-x['win_rate'], -x['games_won']))
+        elif sort_by == "avg_points":
+            leaderboard.sort(key=lambda x: (-x['avg_points'], -x['games_won']))
+        
+        return leaderboard
+    
+    def get_partner_stats(self, player_id: int, season_id: Optional[int] = None) -> list[dict]:
+        """Get stats for all partners a player has played with."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        season_filter = "AND m.season_id = ?" if season_id else ""
+        pid = player_id
+        # 4 for CASE, 4 for wins SUM, 4 for WHERE = 12 total
+        params = [pid, pid, pid, pid,  # CASE for partner_id
+                  pid, pid, pid, pid,  # wins_together SUM
+                  pid, pid, pid, pid]  # WHERE clause
+        if season_id:
+            params.append(season_id)
+        
+        cursor.execute(f'''
+            SELECT 
+                CASE 
+                    WHEN m.team1_player1_id = ? THEN m.team1_player2_id
+                    WHEN m.team1_player2_id = ? THEN m.team1_player1_id
+                    WHEN m.team2_player1_id = ? THEN m.team2_player2_id
+                    WHEN m.team2_player2_id = ? THEN m.team2_player1_id
+                END as partner_id,
+                COUNT(DISTINCT g.id) as games_together,
+                SUM(CASE 
+                    WHEN (m.team1_player1_id = ? OR m.team1_player2_id = ?) AND g.winner_team = 1 THEN 1
+                    WHEN (m.team2_player1_id = ? OR m.team2_player2_id = ?) AND g.winner_team = 2 THEN 1
+                    ELSE 0 
+                END) as wins_together
+            FROM matches m
+            JOIN games g ON g.match_id = m.id
+            WHERE (m.team1_player1_id = ? OR m.team1_player2_id = ? 
+                   OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+            AND g.winner_team > 0
+            {season_filter}
+            GROUP BY partner_id
+            HAVING partner_id IS NOT NULL
+        ''', params)
+        
+        partner_stats = []
+        for row in cursor.fetchall():
+            partner = self.get_player(row['partner_id'])
+            if partner:
+                games = row['games_together']
+                wins = row['wins_together']
+                partner_stats.append({
+                    'partner': partner,
+                    'games_together': games,
+                    'wins_together': wins,
+                    'win_rate': (wins / games * 100) if games > 0 else 0
+                })
+        
+        # Sort by win rate
+        partner_stats.sort(key=lambda x: (-x['win_rate'], -x['games_together']))
+        return partner_stats
     
     def close(self):
         """Close database connection."""

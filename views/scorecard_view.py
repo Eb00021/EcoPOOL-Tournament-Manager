@@ -314,6 +314,10 @@ class ScorecardView(ctk.CTkFrame):
         match_options = []
         self.match_ids.clear()
         
+        # Separate live and completed matches
+        live_matches = []
+        completed_matches = []
+        
         for match in matches:
             team1 = match['team1_p1_name'] or "Unknown"
             if match['team1_p2_name']:
@@ -323,12 +327,32 @@ class ScorecardView(ctk.CTkFrame):
             if match['team2_p2_name']:
                 team2 += f" & {match['team2_p2_name']}"
             
-            status = "✅" if match['is_complete'] else "🔴"
             match_type = "🏆" if match['is_finals'] else "🎱"
             
-            label = f"{status} {match_type} {team1} vs {team2} (Table {match['table_number']})"
+            if match['is_complete']:
+                status = "✅"
+                label = f"{status} {match_type} {team1} vs {team2} (Table {match['table_number']})"
+                completed_matches.append((label, match['id']))
+            else:
+                # Live/in-progress matches get special highlighting
+                status = "🔴 LIVE"
+                label = f"{status} {match_type} {team1} vs {team2} (Table {match['table_number']})"
+                live_matches.append((label, match['id']))
+        
+        # Add live matches first (they're more important)
+        if live_matches:
+            match_options.append("--- LIVE GAMES ---")
+            self.match_ids["--- LIVE GAMES ---"] = None
+            for label, match_id in live_matches:
+                match_options.append(label)
+                self.match_ids[label] = match_id
+            match_options.append("--- COMPLETED ---")
+            self.match_ids["--- COMPLETED ---"] = None
+        
+        # Then add completed matches
+        for label, match_id in completed_matches:
             match_options.append(label)
-            self.match_ids[label] = match['id']
+            self.match_ids[label] = match_id
         
         if not match_options:
             match_options = ["No matches available"]
@@ -341,6 +365,12 @@ class ScorecardView(ctk.CTkFrame):
             return
         
         match_id = self.match_ids[selection]
+        
+        # Ignore separator labels
+        if match_id is None:
+            self.match_var.set("Select a match...")
+            return
+        
         self.current_match = self.db.get_match(match_id)
         
         if self.current_match:
@@ -1350,17 +1380,65 @@ class ScorecardView(ctk.CTkFrame):
         
         self.match_status_label.configure(text=f"Match: {team1_wins} - {team2_wins}")
         
-        # Check if match is complete (best of 3 = first to 2)
-        if team1_wins >= 2 or team2_wins >= 2:
-            winner = 1 if team1_wins >= 2 else 2
-            self.db.complete_match(self.current_match['id'])
+        # Get best_of from match (default to 1 for new system, 3 for finals)
+        best_of = self.current_match.get('best_of', 1)
+        wins_needed = (best_of // 2) + 1
+        
+        # Check if match is complete
+        if team1_wins >= wins_needed or team2_wins >= wins_needed:
+            winner = 1 if team1_wins >= wins_needed else 2
+            
+            # Use the new method that also updates status
+            self.db.complete_match_with_status(self.current_match['id'])
+            
             self.match_status_label.configure(
-                text=f"🏆 MATCH COMPLETE: Team {winner} wins!",
+                text=f"MATCH COMPLETE: Team {winner} wins!",
                 text_color="#ffd700"
             )
             
             # Subtle flash on the match status label
             flash_widget(self.match_status_label, flash_color="#ffd700", times=2)
+            
+            # Check if there's a queue and offer to start next game
+            self._check_queue_for_next_game()
+    
+    def _check_queue_for_next_game(self):
+        """Check if there's a next game in the queue and offer to start it."""
+        # Get the table number from current match
+        table_num = self.current_match.get('table_number', 0)
+        if not table_num:
+            return
+        
+        # Get current league night
+        league_night = self.db.get_current_league_night()
+        if not league_night:
+            return
+        
+        # Check for next queued match
+        next_match = self.db.get_next_queued_match(league_night['id'])
+        if next_match:
+            # Get team names for display
+            team1 = next_match['team1_p1_name'] or "Unknown"
+            if next_match['team1_p2_name']:
+                team1 += f" & {next_match['team1_p2_name']}"
+            
+            team2 = next_match['team2_p1_name'] or "Unknown"
+            if next_match['team2_p2_name']:
+                team2 += f" & {next_match['team2_p2_name']}"
+            
+            result = messagebox.askyesno(
+                "Next Game",
+                f"Match complete!\n\n"
+                f"Start next game on Table {table_num}?\n\n"
+                f"{team1} vs {team2}"
+            )
+            
+            if result:
+                # Start the next match on this table
+                self.db.start_match(next_match['id'], table_num)
+                
+                # Refresh the match list
+                self.load_matches()
     
     def export_scorecard(self):
         """Export current match scorecard to PDF."""

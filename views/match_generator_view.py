@@ -1,10 +1,11 @@
 """
 EcoPOOL League - Match Generator View
-Random partner assignment and match generation.
+Fixed pair assignment, full evening schedule generation with queue system, and buy-in tracking.
 """
 
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
+from datetime import datetime
 from database import DatabaseManager
 from match_generator import MatchGenerator
 from exporter import Exporter
@@ -22,201 +23,382 @@ class MatchGeneratorView(ctk.CTkFrame):
         self.on_pairings_changed = on_pairings_changed
         
         self.selected_players = set()
-        self.generated_pairings = initial_pairings
-        self.is_multi_round = initial_multi_round
+        self.current_pairs = []  # List of (player1_id, player2_id) tuples
+        self.generated_schedule = None
+        self.current_league_night_id = None
+        self.buyin_amount = 10.0
+        self.buyins_paid = {}  # player_id -> bool
+        
+        # Manual pairing state
+        self.manual_pair_selection = []  # For manual pairing mode
+        
+        # Store initial state to restore after UI setup
+        self._initial_state = initial_pairings
         
         self.setup_ui()
         self.load_players()
         
-        # Restore pairings display if we have them
-        if self.generated_pairings:
-            self.restore_pairings_display()
+        # Restore state if provided (after UI is set up)
+        if self._initial_state:
+            self._restore_state(self._initial_state)
     
     def setup_ui(self):
+        # Main container with two columns
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Left column - Setup
+        self.left_col = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        self.left_col.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        
+        # Right column - Schedule Preview
+        self.right_col = ctk.CTkFrame(self.main_container, fg_color="#1a1a2e", corner_radius=15, width=450)
+        self.right_col.pack(side="right", fill="both", padx=(5, 0))
+        self.right_col.pack_propagate(False)
+        
+        self._setup_left_column()
+        self._setup_right_column()
+    
+    def _setup_left_column(self):
+        """Setup the left column with player selection, pair formation, and config."""
         # Header
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(20, 10))
+        header = ctk.CTkFrame(self.left_col, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
         
         ctk.CTkLabel(
             header, 
-            text="🎱 Match Generator",
-            font=get_font(28, "bold")
+            text="League Night Setup",
+            font=get_font(24, "bold")
         ).pack(side="left")
         
-        # Mode selector
-        mode_frame = ctk.CTkFrame(header, fg_color="transparent")
-        mode_frame.pack(side="right")
+        # Configuration row
+        config_frame = ctk.CTkFrame(self.left_col, fg_color="#252540", corner_radius=10)
+        config_frame.pack(fill="x", pady=(0, 10))
         
-        self.mode_var = ctk.StringVar(value="random")
+        config_inner = ctk.CTkFrame(config_frame, fg_color="transparent")
+        config_inner.pack(fill="x", padx=15, pady=12)
         
-        ctk.CTkRadioButton(
-            mode_frame, text="Random Teams", variable=self.mode_var, value="random",
-            font=get_font(14), fg_color="#2d7a3e", hover_color="#1a5f2a",
-            command=self.on_mode_changed
-        ).pack(side="left", padx=10)
+        # Table count
+        ctk.CTkLabel(config_inner, text="Tables:", font=get_font(13)).pack(side="left")
         
-        ctk.CTkRadioButton(
-            mode_frame, text="Ranked Finals (Bo3)", variable=self.mode_var, value="ranked",
-            font=get_font(14), fg_color="#c44536", hover_color="#a43526",
-            command=self.on_mode_changed
-        ).pack(side="left", padx=10)
+        self.table_count_var = ctk.IntVar(value=3)
+        table_frame = ctk.CTkFrame(config_inner, fg_color="transparent")
+        table_frame.pack(side="left", padx=10)
         
-        # Main content
-        content = ctk.CTkFrame(self, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=20, pady=10)
+        ctk.CTkButton(
+            table_frame, text="-", width=30, height=30,
+            fg_color="#c44536", hover_color="#a43526",
+            command=lambda: self._adjust_table_count(-1)
+        ).pack(side="left", padx=2)
         
-        # Left panel - Player selection
-        left_panel = ctk.CTkFrame(content, fg_color="#1a1a2e", corner_radius=15)
-        left_panel.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        self.table_count_label = ctk.CTkLabel(
+            table_frame, text="3", font=get_font(16, "bold"),
+            width=40, text_color="#4CAF50"
+        )
+        self.table_count_label.pack(side="left", padx=5)
+        
+        ctk.CTkButton(
+            table_frame, text="+", width=30, height=30,
+            fg_color="#2d7a3e", hover_color="#1a5f2a",
+            command=lambda: self._adjust_table_count(1)
+        ).pack(side="left", padx=2)
+        
+        # Separator
+        ctk.CTkFrame(config_inner, width=2, height=30, fg_color="#444444").pack(side="left", padx=15)
+        
+        # Min games per pair
+        ctk.CTkLabel(config_inner, text="Min Games/Pair:", font=get_font(13)).pack(side="left")
+        
+        self.min_games_var = ctk.IntVar(value=4)
+        games_frame = ctk.CTkFrame(config_inner, fg_color="transparent")
+        games_frame.pack(side="left", padx=10)
+        
+        ctk.CTkButton(
+            games_frame, text="-", width=30, height=30,
+            fg_color="#c44536", hover_color="#a43526",
+            command=lambda: self._adjust_min_games(-1)
+        ).pack(side="left", padx=2)
+        
+        self.min_games_label = ctk.CTkLabel(
+            games_frame, text="4", font=get_font(16, "bold"),
+            width=40, text_color="#4CAF50"
+        )
+        self.min_games_label.pack(side="left", padx=5)
+        
+        ctk.CTkButton(
+            games_frame, text="+", width=30, height=30,
+            fg_color="#2d7a3e", hover_color="#1a5f2a",
+            command=lambda: self._adjust_min_games(1)
+        ).pack(side="left", padx=2)
+        
+        # Separator
+        ctk.CTkFrame(config_inner, width=2, height=30, fg_color="#444444").pack(side="left", padx=15)
+        
+        # Buy-in amount
+        ctk.CTkLabel(config_inner, text="Buy-in: $", font=get_font(13)).pack(side="left")
+        
+        self.buyin_entry = ctk.CTkEntry(
+            config_inner, width=60, height=30, font=get_font(13),
+            placeholder_text="10"
+        )
+        self.buyin_entry.insert(0, "10")
+        self.buyin_entry.pack(side="left", padx=5)
+        
+        # Two panels side by side: Players and Pairs/Buyins
+        panels = ctk.CTkFrame(self.left_col, fg_color="transparent")
+        panels.pack(fill="both", expand=True)
+        
+        # Player selection panel
+        player_panel = ctk.CTkFrame(panels, fg_color="#1a1a2e", corner_radius=15)
+        player_panel.pack(side="left", fill="both", expand=True, padx=(0, 5))
         
         ctk.CTkLabel(
-            left_panel,
-            text="Select Players for League Night",
-            font=get_font(18, "bold")
-        ).pack(pady=15)
+            player_panel,
+            text="Select Players",
+            font=get_font(16, "bold")
+        ).pack(pady=(15, 5))
         
-        # Select all / Deselect all buttons
-        btn_row = ctk.CTkFrame(left_panel, fg_color="transparent")
+        # Select all / Deselect all
+        btn_row = ctk.CTkFrame(player_panel, fg_color="transparent")
         btn_row.pack(fill="x", padx=15)
         
         ctk.CTkButton(
-            btn_row, text="Select All", height=32, width=100,
+            btn_row, text="All", height=28, width=60,
             fg_color="#3d5a80", hover_color="#2d4a70",
             command=self.select_all
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=2)
         
         ctk.CTkButton(
-            btn_row, text="Deselect All", height=32, width=100,
+            btn_row, text="None", height=28, width=60,
             fg_color="#555555", hover_color="#444444",
             command=self.deselect_all
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=2)
         
         self.selected_count_label = ctk.CTkLabel(
             btn_row, text="0 selected",
-            font=get_font(13),
+            font=get_font(12),
             text_color="#888888"
         )
-        self.selected_count_label.pack(side="right", padx=10)
+        self.selected_count_label.pack(side="right", padx=5)
         
-        # Player checkboxes
         self.players_scroll = ctk.CTkScrollableFrame(
-            left_panel, fg_color="transparent"
+            player_panel, fg_color="transparent", height=200
         )
         self.players_scroll.pack(fill="both", expand=True, padx=10, pady=10)
         
         self.player_checkboxes = {}
         
-        # Rounds selector (for random teams mode)
-        self.rounds_frame = ctk.CTkFrame(left_panel, fg_color="#252540", corner_radius=8)
-        self.rounds_frame.pack(fill="x", padx=15, pady=(0, 10))
+        # Pairs and Buy-ins panel
+        pairs_panel = ctk.CTkFrame(panels, fg_color="#1a1a2e", corner_radius=15)
+        pairs_panel.pack(side="right", fill="both", expand=True, padx=(5, 0))
+        
+        # Pair formation mode selector
+        mode_frame = ctk.CTkFrame(pairs_panel, fg_color="transparent")
+        mode_frame.pack(fill="x", padx=15, pady=(15, 5))
         
         ctk.CTkLabel(
-            self.rounds_frame,
-            text="Rounds (games per player):",
-            font=get_font(13),
+            mode_frame,
+            text="Pair Formation",
+            font=get_font(16, "bold")
+        ).pack(side="left")
+        
+        self.pair_mode_var = ctk.StringVar(value="random")
+        
+        mode_buttons = ctk.CTkFrame(pairs_panel, fg_color="transparent")
+        mode_buttons.pack(fill="x", padx=15, pady=5)
+        
+        ctk.CTkRadioButton(
+            mode_buttons, text="Random", variable=self.pair_mode_var, value="random",
+            font=get_font(12), fg_color="#2d7a3e", hover_color="#1a5f2a"
+        ).pack(side="left", padx=5)
+        
+        ctk.CTkRadioButton(
+            mode_buttons, text="Skill-Based", variable=self.pair_mode_var, value="skill",
+            font=get_font(12), fg_color="#3d5a80", hover_color="#2d4a70"
+        ).pack(side="left", padx=5)
+        
+        ctk.CTkRadioButton(
+            mode_buttons, text="Manual", variable=self.pair_mode_var, value="manual",
+            font=get_font(12), fg_color="#6b4e8a", hover_color="#5b3e7a"
+        ).pack(side="left", padx=5)
+        
+        # Create Pairs button
+        self.create_pairs_btn = ctk.CTkButton(
+            pairs_panel,
+            text="Create Pairs",
+            font=get_font(14, "bold"),
+            height=40,
+            fg_color="#2d7a3e",
+            hover_color="#1a5f2a",
+            command=self.create_pairs
+        )
+        self.create_pairs_btn.pack(fill="x", padx=15, pady=10)
+        
+        # Pairs display (scrollable)
+        self.pairs_scroll = ctk.CTkScrollableFrame(
+            pairs_panel, fg_color="transparent", height=150
+        )
+        self.pairs_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        
+        # Buy-in tracking section
+        buyin_header = ctk.CTkFrame(pairs_panel, fg_color="#252540", corner_radius=8)
+        buyin_header.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(
+            buyin_header,
+            text="Buy-in Tracking",
+            font=get_font(13, "bold")
         ).pack(side="left", padx=10, pady=8)
         
-        self.rounds_var = ctk.IntVar(value=4)
-        self.rounds_slider = ctk.CTkSlider(
-            self.rounds_frame,
-            from_=1,
-            to=8,
-            number_of_steps=7,
-            variable=self.rounds_var,
-            width=120,
-            fg_color="#3d5a80",
-            progress_color="#2d7a3e",
-            command=self.on_rounds_changed
+        self.pot_label = ctk.CTkLabel(
+            buyin_header,
+            text="Pot: $0 / $0",
+            font=get_font(12),
+            text_color="#4CAF50"
         )
-        self.rounds_slider.pack(side="left", padx=5, pady=8)
+        self.pot_label.pack(side="right", padx=10, pady=8)
         
-        self.rounds_label = ctk.CTkLabel(
-            self.rounds_frame,
-            text="4",
-            font=get_font(14, "bold"),
-            text_color="#4CAF50",
-            width=30
+        self.buyins_scroll = ctk.CTkScrollableFrame(
+            pairs_panel, fg_color="transparent", height=100
         )
-        self.rounds_label.pack(side="left", padx=5, pady=8)
+        self.buyins_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         
-        # Generate button
+        # Generate Schedule button
         self.generate_btn = ctk.CTkButton(
-            left_panel,
-            text="🎲 Generate Pairings",
+            self.left_col,
+            text="Generate Full Schedule",
             font=get_font(16, "bold"),
             height=50,
             fg_color="#2d7a3e",
             hover_color="#1a5f2a",
-            command=self.generate_pairings
+            command=self.generate_schedule,
+            state="disabled"
         )
-        self.generate_btn.pack(fill="x", padx=15, pady=15)
-        
-        # Right panel - Generated pairings
-        self.right_panel = ctk.CTkFrame(content, fg_color="#1a1a2e", corner_radius=15, width=400)
-        self.right_panel.pack(side="right", fill="both", expand=True, padx=(10, 0))
-        self.right_panel.pack_propagate(False)
-        
+        self.generate_btn.pack(fill="x", pady=(10, 0))
+    
+    def _setup_right_column(self):
+        """Setup the right column with schedule preview."""
         ctk.CTkLabel(
-            self.right_panel,
-            text="Generated Pairings",
+            self.right_col,
+            text="Schedule Preview",
             font=get_font(18, "bold")
         ).pack(pady=15)
         
-        self.pairings_container = ctk.CTkScrollableFrame(
-            self.right_panel, fg_color="transparent"
+        # Stats summary
+        self.stats_frame = ctk.CTkFrame(self.right_col, fg_color="#252540", corner_radius=10)
+        self.stats_frame.pack(fill="x", padx=15, pady=(0, 10))
+        
+        self.stats_label = ctk.CTkLabel(
+            self.stats_frame,
+            text="Create pairs and generate schedule",
+            font=get_font(12),
+            text_color="#888888"
         )
-        self.pairings_container.pack(fill="both", expand=True, padx=10, pady=5)
+        self.stats_label.pack(pady=10)
         
-        # Placeholder text
-        self.placeholder_label = ctk.CTkLabel(
-            self.pairings_container,
-            text="Select players and click\n'Generate Pairings' to create matches",
-            font=get_font(14),
-            text_color="#666666",
-            justify="center"
+        # Live games section
+        live_header = ctk.CTkFrame(self.right_col, fg_color="#1e4a1e", corner_radius=8)
+        live_header.pack(fill="x", padx=15, pady=(5, 5))
+        
+        ctk.CTkLabel(
+            live_header,
+            text="LIVE - On Tables",
+            font=get_font(14, "bold"),
+            text_color="#4CAF50"
+        ).pack(pady=8)
+        
+        self.live_scroll = ctk.CTkScrollableFrame(
+            self.right_col, fg_color="transparent", height=150
         )
-        self.placeholder_label.pack(pady=50)
+        self.live_scroll.pack(fill="x", padx=15, pady=(0, 10))
         
-        # Button frame for export, clear, and create buttons
-        self.button_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        self.live_placeholder = ctk.CTkLabel(
+            self.live_scroll,
+            text="No live games yet",
+            font=get_font(12),
+            text_color="#666666"
+        )
+        self.live_placeholder.pack(pady=20)
         
-        # Top row - Export and Clear buttons
-        self.top_btn_row = ctk.CTkFrame(self.button_frame, fg_color="transparent")
+        # Queue section
+        queue_header = ctk.CTkFrame(self.right_col, fg_color="#3d3a1e", corner_radius=8)
+        queue_header.pack(fill="x", padx=15, pady=(5, 5))
         
-        # Export button (hidden initially)
+        ctk.CTkLabel(
+            queue_header,
+            text="QUEUE - Waiting",
+            font=get_font(14, "bold"),
+            text_color="#ffd700"
+        ).pack(pady=8)
+        
+        self.queue_scroll = ctk.CTkScrollableFrame(
+            self.right_col, fg_color="transparent", height=200
+        )
+        self.queue_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        self.queue_placeholder = ctk.CTkLabel(
+            self.queue_scroll,
+            text="No queued games",
+            font=get_font(12),
+            text_color="#666666"
+        )
+        self.queue_placeholder.pack(pady=20)
+        
+        # Action buttons
+        btn_frame = ctk.CTkFrame(self.right_col, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=10)
+        
         self.export_btn = ctk.CTkButton(
-            self.top_btn_row,
-            text="📄 Export PDF",
-            font=get_font(13, "bold"),
-            height=36,
+            btn_frame,
+            text="Export PDF",
+            font=get_font(12),
+            height=35,
             fg_color="#3d5a80",
             hover_color="#2d4a70",
-            command=self.export_matches_pdf
+            command=self.export_schedule,
+            state="disabled"
         )
+        self.export_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
         
-        # Clear pairings button (hidden initially)
         self.clear_btn = ctk.CTkButton(
-            self.top_btn_row,
-            text="🗑️ Clear",
-            font=get_font(13, "bold"),
-            height=36,
+            btn_frame,
+            text="Clear",
+            font=get_font(12),
+            height=35,
             fg_color="#c44536",
             hover_color="#a43526",
-            command=self.clear_pairings
+            command=self.clear_schedule,
+            state="disabled"
         )
+        self.clear_btn.pack(side="left", fill="x", expand=True, padx=(5, 0))
         
-        # Create matches button (hidden initially)
+        # Create matches button
         self.create_matches_btn = ctk.CTkButton(
-            self.button_frame,
-            text="✓ Create All Matches",
+            self.right_col,
+            text="Create All Matches",
             font=get_font(14, "bold"),
             height=45,
             fg_color="#4CAF50",
             hover_color="#388E3C",
-            command=self.create_all_matches
+            command=self.create_all_matches,
+            state="disabled"
         )
+        self.create_matches_btn.pack(fill="x", padx=15, pady=(0, 15))
+    
+    def _adjust_table_count(self, delta: int):
+        """Adjust the table count."""
+        new_val = max(1, min(10, self.table_count_var.get() + delta))
+        self.table_count_var.set(new_val)
+        self.table_count_label.configure(text=str(new_val))
+    
+    def _adjust_min_games(self, delta: int):
+        """Adjust the minimum games per pair."""
+        new_val = max(1, min(10, self.min_games_var.get() + delta))
+        self.min_games_var.set(new_val)
+        self.min_games_label.configure(text=str(new_val))
     
     def load_players(self):
+        """Load players into the selection list."""
         for widget in self.players_scroll.winfo_children():
             widget.destroy()
         
@@ -227,28 +409,28 @@ class MatchGeneratorView(ctk.CTkFrame):
             var = ctk.BooleanVar(value=False)
             
             cb_frame = ctk.CTkFrame(self.players_scroll, fg_color="#252540", corner_radius=8)
-            cb_frame.pack(fill="x", pady=3)
+            cb_frame.pack(fill="x", pady=2)
             
             cb = ctk.CTkCheckBox(
                 cb_frame,
                 text=player.name,
                 variable=var,
-                font=get_font(14),
+                font=get_font(13),
                 fg_color="#2d7a3e",
                 hover_color="#1a5f2a",
                 command=self.update_selection_count
             )
-            cb.pack(side="left", padx=15, pady=10)
+            cb.pack(side="left", padx=10, pady=8)
             
-            # Stats badge
+            # Show points instead of wins for ranking
             if player.games_played > 0:
-                stats_text = f"{player.games_won}W/{player.games_played}G ({player.win_rate:.0f}%)"
+                stats_text = f"{player.total_points} pts"
                 ctk.CTkLabel(
                     cb_frame,
                     text=stats_text,
-                    font=get_font(11),
+                    font=get_font(10),
                     text_color="#888888"
-                ).pack(side="right", padx=15)
+                ).pack(side="right", padx=10)
             
             self.player_checkboxes[player.id] = (var, player)
     
@@ -265,543 +447,609 @@ class MatchGeneratorView(ctk.CTkFrame):
     def update_selection_count(self):
         count = sum(1 for var, _ in self.player_checkboxes.values() if var.get())
         self.selected_count_label.configure(text=f"{count} selected")
+        
+        # Reset pairs if selection changes
+        if self.current_pairs:
+            self.current_pairs = []
+            self._update_pairs_display()
+            self.generate_btn.configure(state="disabled")
     
-    def on_mode_changed(self):
-        """Handle mode change between random teams and ranked finals."""
-        mode = self.mode_var.get()
-        if mode == "random":
-            self.rounds_frame.pack(fill="x", padx=15, pady=(0, 10))
-        else:
-            self.rounds_frame.pack_forget()
+    def get_selected_player_ids(self) -> list[int]:
+        """Get list of selected player IDs."""
+        return [pid for pid, (var, _) in self.player_checkboxes.items() if var.get()]
     
-    def on_rounds_changed(self, value):
-        """Update rounds label when slider changes."""
-        rounds = int(value)
-        self.rounds_label.configure(text=str(rounds))
-    
-    def export_matches_pdf(self):
-        """Export the generated match pairings to PDF."""
-        if not self.generated_pairings:
-            messagebox.showwarning("No Pairings", "Please generate pairings first.")
-            return
-        
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF files", "*.pdf")],
-            title="Export Match Schedule",
-            initialfile="league_night_matches.pdf"
-        )
-        
-        if filepath:
-            success = self.exporter.export_match_diagram_pdf(
-                self.generated_pairings, 
-                filepath, 
-                is_multi_round=self.is_multi_round
-            )
-            if success:
-                messagebox.showinfo("Success", f"Match schedule exported to:\n{filepath}")
-            else:
-                messagebox.showerror("Error", "Failed to export match schedule.")
-    
-    def clear_pairings(self):
-        """Clear the current generated pairings."""
-        if not self.generated_pairings:
-            return
-        
-        # Confirm clear
-        if not messagebox.askyesno("Clear Pairings", 
-                                   "Are you sure you want to clear the current pairings?\n\n"
-                                   "This will discard all generated matches."):
-            return
-        
-        # Clear pairings
-        self.generated_pairings = None
-        self.is_multi_round = False
-        
-        # Notify parent that pairings changed
-        if self.on_pairings_changed:
-            self.on_pairings_changed(None, False)
-        
-        # Clear display
-        for widget in self.pairings_container.winfo_children():
-            widget.destroy()
-        
-        self.placeholder_label = ctk.CTkLabel(
-            self.pairings_container,
-            text="Select players and click\n'Generate Pairings' to create matches",
-            font=get_font(14),
-            text_color="#666666",
-            justify="center"
-        )
-        self.placeholder_label.pack(pady=50)
-        
-        # Hide buttons
-        self.export_btn.pack_forget()
-        self.clear_btn.pack_forget()
-        self.top_btn_row.pack_forget()
-        self.create_matches_btn.pack_forget()
-        self.button_frame.pack_forget()
-        
-        # Re-enable generate button
-        self.generate_btn.configure(state="normal", fg_color="#2d7a3e")
-    
-    def restore_pairings_display(self):
-        """Restore the pairings display from saved state."""
-        # Clear placeholder
-        for widget in self.pairings_container.winfo_children():
-            widget.destroy()
-        
-        # Display the pairings
-        if self.is_multi_round:
-            self.display_multi_round_pairings()
-        elif self.generated_pairings.get('is_finals', False):
-            self.display_finals_pairings(self.generated_pairings.get('matches', []))
-        else:
-            self.display_random_pairings()
-        
-        # Disable generate button while pairings exist
-        self.generate_btn.configure(state="disabled", fg_color="#555555")
-        
-        # Show buttons
-        self.button_frame.pack(fill="x", padx=15, pady=15)
-        self.top_btn_row.pack(fill="x", pady=(0, 8))
-        self.export_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.clear_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
-        self.create_matches_btn.pack(fill="x")
-    
-    def generate_pairings(self):
-        # Check if pairings already exist
-        if self.generated_pairings:
-            messagebox.showwarning(
-                "Pairings Already Generated", 
-                "Pairings have already been generated.\n\n"
-                "Click 'Clear' to discard current pairings before generating new ones, "
-                "or 'Create All Matches' to save them."
-            )
-            return
-        
-        # Get selected players
-        selected_ids = [pid for pid, (var, _) in self.player_checkboxes.items() if var.get()]
+    def create_pairs(self):
+        """Create pairs based on selected mode."""
+        selected_ids = self.get_selected_player_ids()
         
         if len(selected_ids) < 2:
             messagebox.showwarning("Not Enough Players", "Please select at least 2 players.")
             return
         
-        # Clear previous display
-        for widget in self.pairings_container.winfo_children():
-            widget.destroy()
-        
-        mode = self.mode_var.get()
+        mode = self.pair_mode_var.get()
         
         if mode == "random":
-            # Use multi-round generation to ensure min games per player
-            num_rounds = self.rounds_var.get()
-            self.generated_pairings = self.generator.generate_multi_round_league_night(
-                selected_ids, 
-                min_games_per_player=num_rounds,
-                avoid_repeats=True
-            )
-            self.is_multi_round = True
-            self.display_multi_round_pairings()
-        else:
-            finals_matches = self.generator.generate_ranked_finals(selected_ids, top_n=len(selected_ids))
-            self.generated_pairings = {'matches': finals_matches, 'is_finals': True}
-            self.is_multi_round = False
-            self.display_finals_pairings(finals_matches)
+            self.current_pairs = self.generator.generate_random_pairs(selected_ids)
+        elif mode == "skill":
+            self.current_pairs = self.generator.generate_skill_based_pairs(selected_ids)
+        elif mode == "manual":
+            self._start_manual_pairing(selected_ids)
+            return
         
-        # Notify parent that pairings were generated (for persistence)
-        if self.on_pairings_changed:
-            self.on_pairings_changed(self.generated_pairings, self.is_multi_round)
-        
-        # Disable generate button while pairings exist
-        self.generate_btn.configure(state="disabled", fg_color="#555555")
-        
-        # Show buttons
-        self.button_frame.pack(fill="x", padx=15, pady=15)
-        self.top_btn_row.pack(fill="x", pady=(0, 8))
-        self.export_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.clear_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
-        self.create_matches_btn.pack(fill="x")
+        self._update_pairs_display()
+        self._update_buyins_display()
+        self.generate_btn.configure(state="normal")
     
-    def display_multi_round_pairings(self):
-        """Display multiple rounds of match pairings."""
-        pairings = self.generated_pairings
-        rounds = pairings.get('rounds', [])
+    def _start_manual_pairing(self, player_ids: list[int]):
+        """Start manual pairing mode."""
+        self.manual_pair_selection = []
+        self.current_pairs = []
         
-        # Summary header
-        summary_frame = ctk.CTkFrame(self.pairings_container, fg_color="#252540", corner_radius=10)
-        summary_frame.pack(fill="x", pady=(10, 15))
-        
-        total_rounds = pairings.get('total_rounds', 0)
-        total_repeats = pairings.get('total_repeats', 0)
-        min_games = pairings.get('min_games', 0)
-        max_games = pairings.get('max_games', 0)
+        # Clear pairs display and show manual pairing UI
+        for widget in self.pairs_scroll.winfo_children():
+            widget.destroy()
         
         ctk.CTkLabel(
-            summary_frame,
-            text=f"📊 {total_rounds} Rounds | {min_games}-{max_games} games/player",
-            font=get_font(14, "bold"),
-            text_color="#4CAF50"
-        ).pack(side="left", padx=15, pady=10)
+            self.pairs_scroll,
+            text="Click players in pairs to create teams",
+            font=get_font(12),
+            text_color="#888888"
+        ).pack(pady=5)
         
-        if total_repeats > 0:
-            ctk.CTkLabel(
-                summary_frame,
-                text=f"⚠️ {total_repeats} repeat(s)",
-                font=get_font(12),
-                text_color="#ff9800"
-            ).pack(side="right", padx=15, pady=10)
-        else:
-            ctk.CTkLabel(
-                summary_frame,
-                text="✓ All unique",
-                font=get_font(12),
-                text_color="#4CAF50"
-            ).pack(side="right", padx=15, pady=10)
+        self.manual_players_frame = ctk.CTkFrame(self.pairs_scroll, fg_color="transparent")
+        self.manual_players_frame.pack(fill="both", expand=True)
         
-        # Display each round
-        for round_data in rounds:
-            round_num = round_data.get('round_num', 1)
-            round_repeats = round_data.get('round_repeats', 0)
-            
-            # Round header
-            round_header = ctk.CTkFrame(self.pairings_container, fg_color="#1a1a2e", corner_radius=8)
-            round_header.pack(fill="x", pady=(10, 5))
-            
-            header_text = f"🎱 Round {round_num} (Best of 1)"
-            ctk.CTkLabel(
-                round_header,
-                text=header_text,
-                font=get_font(15, "bold"),
-                text_color="#90CAF9"
-            ).pack(side="left", padx=15, pady=8)
-            
-            if round_repeats > 0:
-                ctk.CTkLabel(
-                    round_header,
-                    text=f"🔄 {round_repeats}",
-                    font=get_font(11),
-                    text_color="#ffcc80"
-                ).pack(side="right", padx=15, pady=8)
-            
-            # Teams for this round (compact view)
-            teams_text = " | ".join(round_data.get('team_display', []))
-            if teams_text:
-                ctk.CTkLabel(
-                    self.pairings_container,
-                    text=f"Teams: {teams_text}",
-                    font=get_font(11),
-                    text_color="#888888",
-                    wraplength=350,
-                    justify="left"
-                ).pack(fill="x", padx=5, pady=(0, 5))
-            
-            # Matches for this round
-            for match in round_data.get('match_display', []):
-                is_repeat = match.get('is_repeat', False)
-                repeat_count = match.get('repeat_count', 0)
-                
-                bg_color = "#5f3a1e" if is_repeat else "#1e3a5f"
-                
-                match_frame = ctk.CTkFrame(self.pairings_container, fg_color=bg_color, corner_radius=8)
-                match_frame.pack(fill="x", pady=2, padx=5)
-                
-                # Compact match display
-                match_inner = ctk.CTkFrame(match_frame, fg_color="transparent")
-                match_inner.pack(fill="x", padx=10, pady=6)
-                
-                ctk.CTkLabel(
-                    match_inner,
-                    text=f"M{match['match_num']}",
-                    font=get_font(11, "bold"),
-                    text_color="#ff9800" if is_repeat else "#90CAF9",
-                    width=30
-                ).pack(side="left")
-                
-                ctk.CTkLabel(
-                    match_inner,
-                    text=match['team1'],
+        self.manual_buttons = {}
+        for pid in player_ids:
+            player = self.db.get_player(pid)
+            if player:
+                btn = ctk.CTkButton(
+                    self.manual_players_frame,
+                    text=player.name,
                     font=get_font(12),
-                    text_color="#e8f5e9"
-                ).pack(side="left", padx=(5, 0))
-                
-                ctk.CTkLabel(
-                    match_inner,
-                    text="vs",
-                    font=get_font(10),
-                    text_color="#888888"
-                ).pack(side="left", padx=8)
-                
-                ctk.CTkLabel(
-                    match_inner,
-                    text=match['team2'],
-                    font=get_font(12),
-                    text_color="#e3f2fd"
-                ).pack(side="left")
-                
-                if is_repeat:
-                    ctk.CTkLabel(
-                        match_inner,
-                        text=f"(x{repeat_count})",
-                        font=get_font(10),
-                        text_color="#ffcc80"
-                    ).pack(side="right")
+                    height=35,
+                    fg_color="#3d5a80",
+                    hover_color="#2d4a70",
+                    command=lambda p=pid: self._manual_select_player(p)
+                )
+                btn.pack(fill="x", pady=2)
+                self.manual_buttons[pid] = btn
+        
+        # Done button
+        ctk.CTkButton(
+            self.pairs_scroll,
+            text="Done Creating Pairs",
+            font=get_font(12, "bold"),
+            height=35,
+            fg_color="#4CAF50",
+            hover_color="#388E3C",
+            command=self._finish_manual_pairing
+        ).pack(fill="x", pady=10)
     
-    def display_random_pairings(self):
-        """Display single round pairings (legacy method, kept for compatibility)."""
-        pairings = self.generated_pairings
-        
-        # Teams section
-        ctk.CTkLabel(
-            self.pairings_container,
-            text="📋 Teams",
-            font=get_font(16, "bold"),
-            anchor="w"
-        ).pack(fill="x", pady=(10, 5))
-        
-        for i, team_name in enumerate(pairings['team_display'], 1):
-            team_frame = ctk.CTkFrame(self.pairings_container, fg_color="#2d2d44", corner_radius=8)
-            team_frame.pack(fill="x", pady=3)
+    def _manual_select_player(self, player_id: int):
+        """Handle player selection in manual mode."""
+        if player_id in self.manual_pair_selection:
+            # Deselect
+            self.manual_pair_selection.remove(player_id)
+            self.manual_buttons[player_id].configure(fg_color="#3d5a80")
+        else:
+            self.manual_pair_selection.append(player_id)
+            self.manual_buttons[player_id].configure(fg_color="#4CAF50")
             
+            # If we have 2 selected, create a pair
+            if len(self.manual_pair_selection) == 2:
+                p1, p2 = self.manual_pair_selection
+                self.current_pairs.append((p1, p2))
+                
+                # Remove from available
+                self.manual_buttons[p1].destroy()
+                self.manual_buttons[p2].destroy()
+                del self.manual_buttons[p1]
+                del self.manual_buttons[p2]
+                
+                self.manual_pair_selection = []
+                
+                # Show created pair
+                pair_names = self.generator.get_pair_display_names([(p1, p2)])[0]
+                messagebox.showinfo("Pair Created", f"Created: {pair_names}")
+    
+    def _finish_manual_pairing(self):
+        """Finish manual pairing mode."""
+        # Handle remaining players as lone wolves
+        for pid in list(self.manual_buttons.keys()):
+            self.current_pairs.append((pid, None))
+        
+        self._update_pairs_display()
+        self._update_buyins_display()
+        self.generate_btn.configure(state="normal")
+    
+    def _update_pairs_display(self):
+        """Update the pairs display."""
+        for widget in self.pairs_scroll.winfo_children():
+            widget.destroy()
+        
+        if not self.current_pairs:
             ctk.CTkLabel(
-                team_frame,
-                text=f"Team {i}",
-                font=get_font(12, "bold"),
+                self.pairs_scroll,
+                text="No pairs created yet",
+                font=get_font(12),
+                text_color="#666666"
+            ).pack(pady=20)
+            return
+        
+        pair_names = self.generator.get_pair_display_names(self.current_pairs)
+        
+        for i, (pair, name) in enumerate(zip(self.current_pairs, pair_names)):
+            pair_frame = ctk.CTkFrame(self.pairs_scroll, fg_color="#252540", corner_radius=8)
+            pair_frame.pack(fill="x", pady=2)
+            
+            # Pair letter (A, B, C, etc.)
+            letter = chr(65 + i)  # A, B, C...
+            ctk.CTkLabel(
+                pair_frame,
+                text=f"Pair {letter}",
+                font=get_font(11, "bold"),
                 text_color="#4CAF50",
-                width=60
+                width=50
             ).pack(side="left", padx=10, pady=8)
             
             ctk.CTkLabel(
-                team_frame,
-                text=team_name,
-                font=get_font(14)
+                pair_frame,
+                text=name,
+                font=get_font(12)
             ).pack(side="left", padx=5, pady=8)
-        
-        # Matches section with repeat info
-        matches_header_frame = ctk.CTkFrame(self.pairings_container, fg_color="transparent")
-        matches_header_frame.pack(fill="x", pady=(20, 5))
-        
-        ctk.CTkLabel(
-            matches_header_frame,
-            text="⚔️ Matches (Best of 1)",
-            font=get_font(16, "bold"),
-            anchor="w"
-        ).pack(side="left")
-        
-        # Show repeat status
-        if pairings.get('has_repeats', False):
-            repeat_count = pairings.get('total_repeats', 0)
-            ctk.CTkLabel(
-                matches_header_frame,
-                text=f"⚠️ {repeat_count} repeat(s)",
-                font=get_font(12),
-                text_color="#ff9800"
-            ).pack(side="right")
-        else:
-            ctk.CTkLabel(
-                matches_header_frame,
-                text="✓ All unique matchups",
-                font=get_font(12),
-                text_color="#4CAF50"
-            ).pack(side="right")
-        
-        for match in pairings['match_display']:
-            is_repeat = match.get('is_repeat', False)
-            repeat_count = match.get('repeat_count', 0)
-            
-            # Use different color for repeat matches
-            bg_color = "#5f3a1e" if is_repeat else "#1e3a5f"
-            
-            match_frame = ctk.CTkFrame(self.pairings_container, fg_color=bg_color, corner_radius=10)
-            match_frame.pack(fill="x", pady=5)
-            
-            # Header with match number and repeat indicator
-            header_frame = ctk.CTkFrame(match_frame, fg_color="transparent")
-            header_frame.pack(fill="x", padx=15, pady=(10, 5))
-            
-            ctk.CTkLabel(
-                header_frame,
-                text=f"Match {match['match_num']}",
-                font=get_font(13, "bold"),
-                text_color="#ff9800" if is_repeat else "#90CAF9"
-            ).pack(side="left")
-            
-            if is_repeat:
-                repeat_text = f"🔄 Played {repeat_count}x before"
-                ctk.CTkLabel(
-                    header_frame,
-                    text=repeat_text,
-                    font=get_font(11),
-                    text_color="#ffcc80"
-                ).pack(side="right")
-            
-            vs_frame = ctk.CTkFrame(match_frame, fg_color="transparent")
-            vs_frame.pack(fill="x", padx=15, pady=(0, 10))
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text=match['team1'],
-                font=get_font(13),
-                text_color="#e8f5e9"
-            ).pack(side="left")
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text="VS",
-                font=get_font(12, "bold"),
-                text_color="#ff9800"
-            ).pack(side="left", expand=True)
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text=match['team2'],
-                font=get_font(13),
-                text_color="#e3f2fd"
-            ).pack(side="right")
     
-    def display_finals_pairings(self, matches):
-        ctk.CTkLabel(
-            self.pairings_container,
-            text="🏆 Ranked Finals Bracket",
-            font=get_font(16, "bold"),
-            anchor="w"
-        ).pack(fill="x", pady=(10, 10))
-        
-        for match in matches:
-            p1 = self.db.get_player(match['team1_p1'])
-            p2 = self.db.get_player(match['team2_p1'])
-            
-            match_frame = ctk.CTkFrame(self.pairings_container, fg_color="#4a1a1a", corner_radius=10)
-            match_frame.pack(fill="x", pady=5)
-            
-            header = ctk.CTkFrame(match_frame, fg_color="transparent")
-            header.pack(fill="x", padx=15, pady=(10, 5))
-            
-            ctk.CTkLabel(
-                header,
-                text=match.get('round', 'Match'),
-                font=get_font(13, "bold"),
-                text_color="#ff6b6b"
-            ).pack(side="left")
-            
-            ctk.CTkLabel(
-                header,
-                text=match.get('seed_info', ''),
-                font=get_font(11),
-                text_color="#888888"
-            ).pack(side="right")
-            
-            vs_frame = ctk.CTkFrame(match_frame, fg_color="transparent")
-            vs_frame.pack(fill="x", padx=15, pady=(0, 10))
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text=p1.name if p1 else "TBD",
-                font=get_font(14, "bold"),
-                text_color="#ffd700"
-            ).pack(side="left")
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text="VS",
-                font=get_font(12, "bold"),
-                text_color="#ff6b6b"
-            ).pack(side="left", expand=True)
-            
-            ctk.CTkLabel(
-                vs_frame,
-                text=p2.name if p2 else "TBD",
-                font=get_font(14, "bold"),
-                text_color="#ffd700"
-            ).pack(side="right")
-    
-    def create_all_matches(self):
-        if not self.generated_pairings:
-            return
-        
-        is_finals = self.generated_pairings.get('is_finals', False)
-        
-        # Regular season = best of 1, Tournament/Finals = best of 3
-        best_of = 3 if is_finals else 1
-        
-        created = 0
-        
-        if self.is_multi_round:
-            # Multi-round: create matches from all rounds
-            rounds = self.generated_pairings.get('rounds', [])
-            match_counter = 0
-            for round_data in rounds:
-                round_num = round_data.get('round_num', 1)
-                for match in round_data.get('match_display', []):
-                    match_counter += 1
-                    raw = match.get('raw', match)
-                    try:
-                        match_id = self.db.create_match(
-                            team1_p1=raw['team1_p1'],
-                            team1_p2=raw.get('team1_p2'),
-                            team2_p1=raw['team2_p1'],
-                            team2_p2=raw.get('team2_p2'),
-                            table_number=match_counter,
-                            best_of=best_of,
-                            is_finals=is_finals
-                        )
-                        created += 1
-                    except Exception as e:
-                        print(f"Error creating match: {e}")
-        else:
-            # Single round or finals
-            matches_data = self.generated_pairings.get('matches', [])
-            
-            if not is_finals and 'match_display' in self.generated_pairings:
-                matches_data = [m['raw'] for m in self.generated_pairings.get('match_display', [])]
-            
-            for i, match in enumerate(matches_data, 1):
-                try:
-                    match_id = self.db.create_match(
-                        team1_p1=match['team1_p1'],
-                        team1_p2=match.get('team1_p2'),
-                        team2_p1=match['team2_p1'],
-                        team2_p2=match.get('team2_p2'),
-                        table_number=i,
-                        best_of=best_of,
-                        is_finals=is_finals
-                    )
-                    created += 1
-                except Exception as e:
-                    print(f"Error creating match: {e}")
-        
-        match_type = "finals" if is_finals else "regular season"
-        messagebox.showinfo("Success", f"Created {created} {match_type} match(es)!\n(Best of {best_of})")
-        
-        # Clear pairings
-        self.generated_pairings = None
-        self.is_multi_round = False
-        for widget in self.pairings_container.winfo_children():
+    def _update_buyins_display(self):
+        """Update the buy-ins tracking display."""
+        for widget in self.buyins_scroll.winfo_children():
             widget.destroy()
         
-        self.placeholder_label = ctk.CTkLabel(
-            self.pairings_container,
-            text="Matches created!\nSelect players to generate more.",
-            font=get_font(14),
-            text_color="#4CAF50",
-            justify="center"
+        if not self.current_pairs:
+            return
+        
+        # Get buy-in amount
+        try:
+            self.buyin_amount = float(self.buyin_entry.get())
+        except ValueError:
+            self.buyin_amount = 10.0
+        
+        # Get all unique players from pairs
+        player_ids = set()
+        for p1, p2 in self.current_pairs:
+            player_ids.add(p1)
+            if p2:
+                player_ids.add(p2)
+        
+        self.buyin_vars = {}
+        total_expected = len(player_ids) * self.buyin_amount
+        total_paid = 0
+        
+        for pid in sorted(player_ids):
+            player = self.db.get_player(pid)
+            if not player:
+                continue
+            
+            row = ctk.CTkFrame(self.buyins_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            
+            var = ctk.BooleanVar(value=self.buyins_paid.get(pid, False))
+            self.buyin_vars[pid] = var
+            
+            if var.get():
+                total_paid += self.buyin_amount
+            
+            cb = ctk.CTkCheckBox(
+                row,
+                text="",
+                variable=var,
+                width=20,
+                fg_color="#4CAF50",
+                hover_color="#388E3C",
+                command=lambda p=pid: self._on_buyin_changed(p)
+            )
+            cb.pack(side="left", padx=5)
+            
+            ctk.CTkLabel(
+                row,
+                text=player.name,
+                font=get_font(11),
+                width=100,
+                anchor="w"
+            ).pack(side="left", padx=5)
+            
+            # Venmo info if available
+            if player.venmo:
+                ctk.CTkLabel(
+                    row,
+                    text=player.venmo,
+                    font=get_font(10),
+                    text_color="#888888"
+                ).pack(side="right", padx=5)
+        
+        self.pot_label.configure(text=f"Pot: ${total_paid:.0f} / ${total_expected:.0f}")
+    
+    def _on_buyin_changed(self, player_id: int):
+        """Handle buy-in checkbox change."""
+        self.buyins_paid[player_id] = self.buyin_vars[player_id].get()
+        self._update_pot_total()
+    
+    def _update_pot_total(self):
+        """Update the pot total display."""
+        total_paid = sum(self.buyin_amount for pid, var in self.buyin_vars.items() if var.get())
+        total_expected = len(self.buyin_vars) * self.buyin_amount
+        self.pot_label.configure(text=f"Pot: ${total_paid:.0f} / ${total_expected:.0f}")
+    
+    def generate_schedule(self):
+        """Generate the full evening schedule."""
+        if not self.current_pairs:
+            messagebox.showwarning("No Pairs", "Please create pairs first.")
+            return
+        
+        table_count = self.table_count_var.get()
+        min_games = self.min_games_var.get()
+        
+        self.generated_schedule = self.generator.generate_full_schedule(
+            self.current_pairs,
+            min_games_per_pair=min_games,
+            table_count=table_count,
+            avoid_repeats=True
         )
-        self.placeholder_label.pack(pady=50)
         
-        # Hide buttons
-        self.export_btn.pack_forget()
-        self.clear_btn.pack_forget()
-        self.top_btn_row.pack_forget()
-        self.create_matches_btn.pack_forget()
-        self.button_frame.pack_forget()
+        self._display_schedule()
         
-        # Re-enable generate button
-        self.generate_btn.configure(state="normal", fg_color="#2d7a3e")
+        # Enable action buttons
+        self.export_btn.configure(state="normal")
+        self.clear_btn.configure(state="normal")
+        self.create_matches_btn.configure(state="normal")
         
-        # Notify parent that pairings were cleared
+        # Persist state so it survives view changes
+        self._persist_state()
+    
+    def _get_current_state(self) -> dict:
+        """Get the current state as a dictionary for persistence."""
+        # Get selected player IDs
+        selected_ids = self.get_selected_player_ids()
+        
+        return {
+            'selected_player_ids': selected_ids,
+            'current_pairs': self.current_pairs,
+            'generated_schedule': self.generated_schedule,
+            'buyins_paid': self.buyins_paid.copy(),
+            'table_count': self.table_count_var.get(),
+            'min_games': self.min_games_var.get(),
+            'buyin_amount': self.buyin_amount,
+            'pair_mode': self.pair_mode_var.get()
+        }
+    
+    def _persist_state(self):
+        """Persist the current state via callback."""
         if self.on_pairings_changed:
-            self.on_pairings_changed(None, False)
+            state = self._get_current_state()
+            self.on_pairings_changed(state, False)
+    
+    def _restore_state(self, state: dict):
+        """Restore the view state from a saved state dictionary."""
+        if not state:
+            return
         
-        # Callback to refresh other views
+        try:
+            # Restore configuration values
+            if 'table_count' in state:
+                self.table_count_var.set(state['table_count'])
+                self.table_count_label.configure(text=str(state['table_count']))
+            
+            if 'min_games' in state:
+                self.min_games_var.set(state['min_games'])
+                self.min_games_label.configure(text=str(state['min_games']))
+            
+            if 'buyin_amount' in state:
+                self.buyin_amount = state['buyin_amount']
+                self.buyin_entry.delete(0, 'end')
+                self.buyin_entry.insert(0, str(state['buyin_amount']))
+            
+            if 'pair_mode' in state:
+                self.pair_mode_var.set(state['pair_mode'])
+            
+            # Restore player selections
+            if 'selected_player_ids' in state:
+                for pid in state['selected_player_ids']:
+                    if pid in self.player_checkboxes:
+                        var, _ = self.player_checkboxes[pid]
+                        var.set(True)
+                self.update_selection_count()
+            
+            # Restore buyins paid
+            if 'buyins_paid' in state:
+                self.buyins_paid = state['buyins_paid'].copy()
+            
+            # Restore pairs
+            if 'current_pairs' in state and state['current_pairs']:
+                self.current_pairs = state['current_pairs']
+                self._update_pairs_display()
+                self._update_buyins_display()
+                self.generate_btn.configure(state="normal")
+            
+            # Restore generated schedule
+            if 'generated_schedule' in state and state['generated_schedule']:
+                self.generated_schedule = state['generated_schedule']
+                self._display_schedule()
+                
+                # Enable action buttons
+                self.export_btn.configure(state="normal")
+                self.clear_btn.configure(state="normal")
+                self.create_matches_btn.configure(state="normal")
+        except Exception as e:
+            print(f"Error restoring match generator state: {e}")
+    
+    def _display_schedule(self):
+        """Display the generated schedule."""
+        if not self.generated_schedule:
+            return
+        
+        schedule = self.generated_schedule
+        
+        # Update stats
+        total_matches = schedule['total_matches']
+        live_count = len(schedule['live_matches'])
+        queue_count = len(schedule['queued_matches'])
+        
+        stats_text = f"{total_matches} games | {live_count} live | {queue_count} queued"
+        self.stats_label.configure(text=stats_text, text_color="#4CAF50")
+        
+        # Clear and populate live games
+        for widget in self.live_scroll.winfo_children():
+            widget.destroy()
+        
+        if schedule['live_matches']:
+            for match in schedule['live_matches']:
+                self._create_match_card(self.live_scroll, match, is_live=True)
+        else:
+            ctk.CTkLabel(
+                self.live_scroll,
+                text="No live games",
+                font=get_font(12),
+                text_color="#666666"
+            ).pack(pady=10)
+        
+        # Clear and populate queue
+        for widget in self.queue_scroll.winfo_children():
+            widget.destroy()
+        
+        if schedule['queued_matches']:
+            for i, match in enumerate(schedule['queued_matches']):
+                self._create_match_card(self.queue_scroll, match, is_live=False, queue_num=i+1)
+        else:
+            ctk.CTkLabel(
+                self.queue_scroll,
+                text="No queued games",
+                font=get_font(12),
+                text_color="#666666"
+            ).pack(pady=10)
+    
+    def _create_match_card(self, parent, match: dict, is_live: bool, queue_num: int = None):
+        """Create a match card for display."""
+        display = self.generator.get_match_display(match, self.current_pairs)
+        
+        bg_color = "#1e4a1e" if is_live else "#3d3a1e"
+        if match.get('is_repeat', False):
+            bg_color = "#4a3020"
+        
+        card = ctk.CTkFrame(parent, fg_color=bg_color, corner_radius=8)
+        card.pack(fill="x", pady=2)
+        
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=8)
+        
+        # Table number or queue position
+        if is_live:
+            label_text = f"T{match.get('table_number', '?')}"
+            label_color = "#4CAF50"
+        else:
+            label_text = f"#{queue_num}"
+            label_color = "#ffd700"
+        
+        ctk.CTkLabel(
+            inner,
+            text=label_text,
+            font=get_font(12, "bold"),
+            text_color=label_color,
+            width=30
+        ).pack(side="left")
+        
+        # Teams
+        ctk.CTkLabel(
+            inner,
+            text=display['team1'],
+            font=get_font(11),
+            text_color="#e8f5e9"
+        ).pack(side="left", padx=(5, 0))
+        
+        ctk.CTkLabel(
+            inner,
+            text="vs",
+            font=get_font(10),
+            text_color="#888888"
+        ).pack(side="left", padx=8)
+        
+        ctk.CTkLabel(
+            inner,
+            text=display['team2'],
+            font=get_font(11),
+            text_color="#e3f2fd"
+        ).pack(side="left")
+        
+        # Repeat indicator
+        if match.get('is_repeat', False):
+            ctk.CTkLabel(
+                inner,
+                text=f"(x{match.get('repeat_count', 1)})",
+                font=get_font(9),
+                text_color="#ffcc80"
+            ).pack(side="right")
+    
+    def clear_schedule(self):
+        """Clear the generated schedule."""
+        if messagebox.askyesno("Clear Schedule", "Clear the current schedule?"):
+            self.generated_schedule = None
+            self._display_empty_schedule()
+            self.export_btn.configure(state="disabled")
+            self.clear_btn.configure(state="disabled")
+            self.create_matches_btn.configure(state="disabled")
+            
+            # Clear persisted state
+            if self.on_pairings_changed:
+                self.on_pairings_changed(None, False)
+    
+    def _display_empty_schedule(self):
+        """Display empty schedule state."""
+        self.stats_label.configure(text="Create pairs and generate schedule", text_color="#888888")
+        
+        for widget in self.live_scroll.winfo_children():
+            widget.destroy()
+        ctk.CTkLabel(
+            self.live_scroll,
+            text="No live games yet",
+            font=get_font(12),
+            text_color="#666666"
+        ).pack(pady=20)
+        
+        for widget in self.queue_scroll.winfo_children():
+            widget.destroy()
+        ctk.CTkLabel(
+            self.queue_scroll,
+            text="No queued games",
+            font=get_font(12),
+            text_color="#666666"
+        ).pack(pady=20)
+    
+    def export_schedule(self):
+        """Export the schedule to PDF."""
+        if not self.generated_schedule:
+            return
+        
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Export Schedule",
+            initialfile="league_night_schedule.pdf"
+        )
+        
+        if filepath:
+            # Build the pairings data structure for the exporter
+            pair_names = self.generator.get_pair_display_names(self.current_pairs)
+            
+            # Build match display list
+            match_display = []
+            for i, match in enumerate(self.generated_schedule.get('matches', []), 1):
+                pair1_idx = match['pair1_idx']
+                pair2_idx = match['pair2_idx']
+                
+                match_display.append({
+                    'match_num': i,
+                    'team1': pair_names[pair1_idx] if pair1_idx < len(pair_names) else "Unknown",
+                    'team2': pair_names[pair2_idx] if pair2_idx < len(pair_names) else "Unknown",
+                    'is_repeat': match.get('is_repeat', False),
+                    'repeat_count': match.get('repeat_count', 0)
+                })
+            
+            pairings_data = {
+                'team_display': pair_names,
+                'match_display': match_display,
+                'has_repeats': any(m.get('is_repeat', False) for m in self.generated_schedule.get('matches', [])),
+                'total_repeats': sum(1 for m in self.generated_schedule.get('matches', []) if m.get('is_repeat', False))
+            }
+            
+            if self.exporter.export_match_diagram_pdf(pairings_data, filepath, is_multi_round=False):
+                messagebox.showinfo("Success", f"Schedule exported to:\n{filepath}")
+            else:
+                messagebox.showerror("Error", "Failed to export schedule.")
+    
+    def create_all_matches(self):
+        """Create all matches in the database."""
+        if not self.generated_schedule:
+            return
+        
+        schedule = self.generated_schedule
+        
+        # Get or create active season
+        season = self.db.get_active_season()
+        season_id = season.id if season else None
+        
+        # Create league night
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            buyin = float(self.buyin_entry.get())
+        except ValueError:
+            buyin = 10.0
+        
+        league_night_id = self.db.create_league_night(
+            date=today,
+            buy_in=buyin,
+            season_id=season_id,
+            table_count=self.table_count_var.get()
+        )
+        self.current_league_night_id = league_night_id
+        
+        # Create pairs in database
+        pair_id_map = {}  # pair_idx -> database pair_id
+        for i, (p1, p2) in enumerate(self.current_pairs):
+            pair_name = chr(65 + i)  # A, B, C...
+            pair_id = self.db.create_pair(league_night_id, p1, p2, f"Pair {pair_name}")
+            pair_id_map[i] = pair_id
+        
+        # Save buy-ins
+        for pid, paid in self.buyins_paid.items():
+            self.db.set_buyin(league_night_id, pid, buyin, paid=paid)
+        
+        # Create matches
+        created = 0
+        for match in schedule['matches']:
+            pair1 = self.current_pairs[match['pair1_idx']]
+            pair2 = self.current_pairs[match['pair2_idx']]
+            
+            status = 'live' if match.get('status') == 'live' else 'queued'
+            table_num = match.get('table_number', 0) or 0
+            
+            try:
+                self.db.create_match(
+                    team1_p1=pair1[0],
+                    team1_p2=pair1[1],
+                    team2_p1=pair2[0],
+                    team2_p2=pair2[1],
+                    table_number=table_num,
+                    best_of=1,  # Single game per match
+                    is_finals=False,
+                    league_night_id=league_night_id,
+                    pair1_id=pair_id_map.get(match['pair1_idx']),
+                    pair2_id=pair_id_map.get(match['pair2_idx']),
+                    queue_position=match.get('queue_position', 0),
+                    status=status,
+                    season_id=season_id
+                )
+                created += 1
+            except Exception as e:
+                print(f"Error creating match: {e}")
+        
+        messagebox.showinfo(
+            "Success",
+            f"Created {created} matches!\n\n"
+            f"League Night ID: {league_night_id}\n"
+            f"Tables: {self.table_count_var.get()}\n"
+            f"Go to Table Tracker to manage live games."
+        )
+        
+        # Clear state
+        self.generated_schedule = None
+        self.current_pairs = []
+        self._display_empty_schedule()
+        self._update_pairs_display()
+        
+        # Disable buttons
+        self.export_btn.configure(state="disabled")
+        self.clear_btn.configure(state="disabled")
+        self.create_matches_btn.configure(state="disabled")
+        self.generate_btn.configure(state="disabled")
+        
+        # Callback
         if self.on_match_created:
             self.on_match_created()
