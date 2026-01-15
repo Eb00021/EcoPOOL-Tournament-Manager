@@ -457,41 +457,169 @@ class ScorecardView(ctk.CTkFrame):
         
         ctk.CTkLabel(
             table_frame,
-            text="Click a ball to pocket it",
-            font=get_font(14),
+            text="Click ball to pocket • Balls count for their owner (not who pocketed) • 8-ball only scores if your group is cleared",
+            font=get_font(12),
             text_color="#888888"
         ).pack(pady=(15, 5))
         
         self.pool_table = PoolTableCanvas(table_frame, on_ball_click=self.on_ball_clicked)
         self.pool_table.pack(pady=10)
         
-        # Ball pocket controls
-        pocket_controls = ctk.CTkFrame(table_frame, fg_color="transparent")
-        pocket_controls.pack(fill="x", padx=20, pady=10)
+        # Turn indicator and controls
+        turn_controls = ctk.CTkFrame(table_frame, fg_color="transparent")
+        turn_controls.pack(fill="x", padx=20, pady=10)
         
         self.pocket_team_var = ctk.IntVar(value=1)
         
+        # Visual turn indicator - clickable to switch teams
+        self.turn_indicator_frame = ctk.CTkFrame(turn_controls, fg_color="transparent")
+        self.turn_indicator_frame.pack(side="left", expand=True)
+        
         ctk.CTkLabel(
-            pocket_controls, text="Pocket for:",
-            font=get_font(13)
-        ).pack(side="left", padx=10)
+            self.turn_indicator_frame, text="SHOOTING:",
+            font=get_font(11),
+            text_color="#888888"
+        ).pack(side="left", padx=(0, 10))
         
-        ctk.CTkRadioButton(
-            pocket_controls, text="Team 1", variable=self.pocket_team_var, value=1,
-            fg_color="#4CAF50", hover_color="#388E3C"
-        ).pack(side="left", padx=15)
+        # Team 1 indicator (clickable)
+        self.team1_turn_btn = ctk.CTkButton(
+            self.turn_indicator_frame,
+            text="◀ TEAM 1",
+            font=get_font(14, "bold"),
+            fg_color="#4CAF50",
+            hover_color="#388E3C",
+            width=120, height=40,
+            corner_radius=20,
+            command=lambda: self.set_shooting_team(1)
+        )
+        self.team1_turn_btn.pack(side="left", padx=5)
         
-        ctk.CTkRadioButton(
-            pocket_controls, text="Team 2", variable=self.pocket_team_var, value=2,
-            fg_color="#2196F3", hover_color="#1976D2"
-        ).pack(side="left", padx=15)
+        # Arrow indicator
+        self.turn_arrow = ctk.CTkLabel(
+            self.turn_indicator_frame,
+            text="🎯",
+            font=get_font(20)
+        )
+        self.turn_arrow.pack(side="left", padx=5)
+        
+        # Team 2 indicator (clickable)
+        self.team2_turn_btn = ctk.CTkButton(
+            self.turn_indicator_frame,
+            text="TEAM 2 ▶",
+            font=get_font(14, "bold"),
+            fg_color="#444444",
+            hover_color="#1976D2",
+            width=120, height=40,
+            corner_radius=20,
+            command=lambda: self.set_shooting_team(2)
+        )
+        self.team2_turn_btn.pack(side="left", padx=5)
+        
+        # Miss/Scratch button - switches turn without pocketing a ball
+        self.miss_btn = ctk.CTkButton(
+            turn_controls, text="Miss / Scratch",
+            fg_color="#8B4513", hover_color="#654321",
+            width=110,
+            command=self.handle_miss
+        )
+        self.miss_btn.pack(side="right", padx=5)
         
         ctk.CTkButton(
-            pocket_controls, text="Reset Balls",
+            turn_controls, text="Reset Balls",
             fg_color="#c44536", hover_color="#a43526",
             width=100,
             command=self.reset_current_game
-        ).pack(side="right", padx=10)
+        ).pack(side="right", padx=5)
+        
+        # === GAME PROGRESS VISUALIZATION ===
+        progress_frame = ctk.CTkFrame(table_frame, fg_color="#252540", corner_radius=10)
+        progress_frame.pack(fill="x", padx=20, pady=(5, 15))
+        
+        # Team 1 progress
+        t1_progress = ctk.CTkFrame(progress_frame, fg_color="transparent")
+        t1_progress.pack(fill="x", padx=15, pady=8)
+        
+        ctk.CTkLabel(
+            t1_progress, text="Team 1:",
+            font=get_font(11, "bold"),
+            text_color="#4CAF50",
+            width=60
+        ).pack(side="left")
+        
+        self.team1_balls_frame = ctk.CTkFrame(t1_progress, fg_color="transparent")
+        self.team1_balls_frame.pack(side="left", padx=10)
+        
+        self.team1_ball_indicators = []
+        for i in range(7):
+            indicator = ctk.CTkLabel(
+                self.team1_balls_frame,
+                text="●",
+                font=get_font(16),
+                text_color="#666666",
+                width=20
+            )
+            indicator.pack(side="left")
+            self.team1_ball_indicators.append(indicator)
+        
+        self.team1_8ball_indicator = ctk.CTkLabel(
+            t1_progress,
+            text="⑧",
+            font=get_font(18),
+            text_color="#333333"
+        )
+        self.team1_8ball_indicator.pack(side="left", padx=(10, 0))
+        
+        self.team1_progress_label = ctk.CTkLabel(
+            t1_progress,
+            text="0/7",
+            font=get_font(11),
+            text_color="#888888",
+            width=40
+        )
+        self.team1_progress_label.pack(side="right")
+        
+        # Team 2 progress
+        t2_progress = ctk.CTkFrame(progress_frame, fg_color="transparent")
+        t2_progress.pack(fill="x", padx=15, pady=(0, 8))
+        
+        ctk.CTkLabel(
+            t2_progress, text="Team 2:",
+            font=get_font(11, "bold"),
+            text_color="#2196F3",
+            width=60
+        ).pack(side="left")
+        
+        self.team2_balls_frame = ctk.CTkFrame(t2_progress, fg_color="transparent")
+        self.team2_balls_frame.pack(side="left", padx=10)
+        
+        self.team2_ball_indicators = []
+        for i in range(7):
+            indicator = ctk.CTkLabel(
+                self.team2_balls_frame,
+                text="●",
+                font=get_font(16),
+                text_color="#666666",
+                width=20
+            )
+            indicator.pack(side="left")
+            self.team2_ball_indicators.append(indicator)
+        
+        self.team2_8ball_indicator = ctk.CTkLabel(
+            t2_progress,
+            text="⑧",
+            font=get_font(18),
+            text_color="#333333"
+        )
+        self.team2_8ball_indicator.pack(side="left", padx=(10, 0))
+        
+        self.team2_progress_label = ctk.CTkLabel(
+            t2_progress,
+            text="0/7",
+            font=get_font(11),
+            text_color="#888888",
+            width=40
+        )
+        self.team2_progress_label.pack(side="right")
         
         # === RIGHT COLUMN: Game Controls ===
         
@@ -530,7 +658,7 @@ class ScorecardView(ctk.CTkFrame):
         group_frame.pack(fill="x", padx=15, pady=10)
         
         ctk.CTkLabel(
-            group_frame, text="Team 1 Group:",
+            group_frame, text="Team 1 Group (auto or manual):",
             font=get_font(13)
         ).pack(pady=(10, 5))
         
@@ -666,15 +794,171 @@ class ScorecardView(ctk.CTkFrame):
         if game['team1_group']:
             self.set_group(game['team1_group'], save=False)
         
+        # Check if game is already complete
+        if game.get('winner_team', 0) > 0:
+            self.set_game_over_state()
+        else:
+            self.set_game_active_state()
+        
         self.update_scores()
+        self.update_progress_visualization()
     
     def reset_current_game(self):
         """Reset current game to initial state."""
         self.pool_table.reset_balls()
         self.group_var.set("")
+        self.pool_table.set_team_group(None)
         self.team1_group_label.configure(text="Group: -")
         self.team2_group_label.configure(text="Group: -")
-        self.update_scores()
+        self.team1_score_label.configure(text="0")
+        self.team2_score_label.configure(text="0")
+        self.set_game_active_state()  # Enable turn controls
+        self.update_progress_visualization()
+        self.save_game_state()
+    
+    def set_shooting_team(self, team: int, flash=True):
+        """Set which team is currently shooting and update visual indicator."""
+        self.pocket_team_var.set(team)
+        
+        if team == 1:
+            self.team1_turn_btn.configure(fg_color="#4CAF50")
+            self.team2_turn_btn.configure(fg_color="#444444")
+            self.turn_arrow.configure(text="🎯")
+        else:
+            self.team1_turn_btn.configure(fg_color="#444444")
+            self.team2_turn_btn.configure(fg_color="#2196F3")
+            self.turn_arrow.configure(text="🎯")
+        
+        # Flash the active team button (unless disabled)
+        if flash:
+            active_btn = self.team1_turn_btn if team == 1 else self.team2_turn_btn
+            flash_widget(active_btn, flash_color="#ffd700", times=1)
+    
+    def switch_turn(self):
+        """Switch to the other team's turn."""
+        current_team = self.pocket_team_var.get()
+        new_team = 2 if current_team == 1 else 1
+        self.set_shooting_team(new_team)
+    
+    def handle_miss(self):
+        """Handle a miss or scratch - switch turns without pocketing a ball."""
+        self.switch_turn()
+    
+    def set_game_over_state(self):
+        """Dim the turn indicators when the game is over."""
+        self.team1_turn_btn.configure(fg_color="#333333", state="disabled")
+        self.team2_turn_btn.configure(fg_color="#333333", state="disabled")
+        self.turn_arrow.configure(text="🏁")
+        self.miss_btn.configure(state="disabled")
+    
+    def set_game_active_state(self):
+        """Re-enable turn indicators for active game."""
+        self.team1_turn_btn.configure(state="normal")
+        self.team2_turn_btn.configure(state="normal")
+        self.miss_btn.configure(state="normal")
+        self.set_shooting_team(1, flash=False)
+    
+    def update_progress_visualization(self):
+        """Update the ball progress indicators for both teams."""
+        group = self.group_var.get()
+        
+        # Check if current game is complete (has a winner)
+        game_over = False
+        if self.current_game_id:
+            game = self.db.get_game(self.current_game_id)
+            if game and game.get('winner_team', 0) > 0:
+                game_over = True
+        
+        if not group:
+            # No groups assigned - show neutral state
+            dim_color = "#444444" if game_over else "#666666"
+            for indicator in self.team1_ball_indicators:
+                indicator.configure(text="●", text_color=dim_color)
+            for indicator in self.team2_ball_indicators:
+                indicator.configure(text="●", text_color=dim_color)
+            self.team1_8ball_indicator.configure(text_color="#333333")
+            self.team2_8ball_indicator.configure(text_color="#333333")
+            self.team1_progress_label.configure(text="0/7", text_color="#666666" if game_over else "#888888")
+            self.team2_progress_label.configure(text="0/7", text_color="#666666" if game_over else "#888888")
+            return
+        
+        # Determine which balls belong to which team
+        if group == "solids":
+            team1_balls = SOLIDS
+            team2_balls = STRIPES
+            team1_color = "#FFD700"  # Gold for solids
+            team2_color = "#87CEEB"  # Light blue for stripes (white with stripe)
+        else:
+            team1_balls = STRIPES
+            team2_balls = SOLIDS
+            team1_color = "#87CEEB"
+            team2_color = "#FFD700"
+        
+        # Dim colors if game is over
+        if game_over:
+            team1_color = "#666666"
+            team2_color = "#666666"
+        
+        # Count pocketed balls for each team
+        team1_pocketed = 0
+        team2_pocketed = 0
+        eight_ball_pocketed_by = None
+        
+        for ball_num, state in self.pool_table.ball_states.items():
+            if state.startswith('pocketed_'):
+                if ball_num in team1_balls:
+                    team1_pocketed += 1
+                elif ball_num in team2_balls:
+                    team2_pocketed += 1
+                elif ball_num == 8:
+                    eight_ball_pocketed_by = int(state[-1])
+        
+        # Update Team 1 indicators
+        for i, indicator in enumerate(self.team1_ball_indicators):
+            if i < team1_pocketed:
+                check_color = "#666666" if game_over else "#4CAF50"
+                indicator.configure(text="✓", text_color=check_color)
+            else:
+                indicator.configure(text="●", text_color=team1_color)
+        
+        # Update Team 2 indicators
+        for i, indicator in enumerate(self.team2_ball_indicators):
+            if i < team2_pocketed:
+                check_color = "#666666" if game_over else "#2196F3"
+                indicator.configure(text="✓", text_color=check_color)
+            else:
+                indicator.configure(text="●", text_color=team2_color)
+        
+        # Update 8-ball indicators
+        if game_over:
+            self.team1_8ball_indicator.configure(text_color="#333333")
+            self.team2_8ball_indicator.configure(text_color="#333333")
+        else:
+            if team1_pocketed == 7:
+                self.team1_8ball_indicator.configure(text_color="#4CAF50")  # Ready to shoot 8
+            else:
+                self.team1_8ball_indicator.configure(text_color="#333333")
+            
+            if team2_pocketed == 7:
+                self.team2_8ball_indicator.configure(text_color="#2196F3")  # Ready to shoot 8
+            else:
+                self.team2_8ball_indicator.configure(text_color="#333333")
+        
+        # Show if 8-ball was legally pocketed
+        if eight_ball_pocketed_by == 1 and team1_pocketed == 7:
+            check_color = "#888888" if game_over else "#ffd700"
+            self.team1_8ball_indicator.configure(text="✓", text_color=check_color)
+        elif eight_ball_pocketed_by == 2 and team2_pocketed == 7:
+            check_color = "#888888" if game_over else "#ffd700"
+            self.team2_8ball_indicator.configure(text="✓", text_color=check_color)
+        else:
+            self.team1_8ball_indicator.configure(text="⑧")
+            self.team2_8ball_indicator.configure(text="⑧")
+        
+        # Update progress labels
+        label_color = "#666666" if game_over else "#888888"
+        self.team1_progress_label.configure(text=f"{team1_pocketed}/7", text_color=label_color)
+        self.team2_progress_label.configure(text=f"{team2_pocketed}/7", text_color=label_color)
     
     def set_group(self, group: str, save=True):
         """Set team 1's group (solids or stripes)."""
@@ -688,37 +972,253 @@ class ScorecardView(ctk.CTkFrame):
             self.team1_group_label.configure(text="Group: Stripes (9-15)")
             self.team2_group_label.configure(text="Group: Solids (1-7)")
         
+        # Update progress visualization with new group colors
+        self.update_progress_visualization()
+        
         if save:
             self.save_game_state()
     
     def on_ball_clicked(self, ball_num):
-        """Handle ball click - pocket it for selected team."""
+        """Handle ball click - pocket it for selected team.
+        
+        Turn switching rules (standard 8-ball):
+        - Pocket your own ball → keep shooting (same turn)
+        - Pocket opponent's ball → turn switches to opponent
+        - Pocket 8-ball legally → game over (winner)
+        - Pocket 8-ball illegally → game over (loser)
+        """
         team = self.pocket_team_var.get()
         
         if self.pool_table.ball_states[ball_num] == 'table':
+            # Check for illegal 8-ball pocket
+            if ball_num == 8:
+                if self._check_early_8ball(team):
+                    # Warn about early 8-ball but still allow pocketing for tracking
+                    result = messagebox.askyesno(
+                        "Early 8-Ball Warning",
+                        f"Team {team} has NOT cleared all their balls yet!\n\n"
+                        "Pocketing the 8-ball now is a foul.\n"
+                        "Do you want to record this as an early 8-ball loss?\n\n"
+                        "Yes = Record as early 8-ball (Team loses)\n"
+                        "No = Just pocket the ball (for tracking only)"
+                    )
+                    if result:
+                        self.early_8ball(team)
+                        return
+            
             self.pool_table.pocket_ball(ball_num, team)
+            
+            # Determine if turn should switch based on ball ownership
+            should_switch = self._should_switch_turn(ball_num, team)
+            
+            # Auto-assign groups based on first non-8 ball pocketed
+            if ball_num != 8 and not self.group_var.get():
+                self._auto_assign_group(ball_num, team)
+                # First ball pocketed - team keeps shooting
+                should_switch = False
+            
+            # Show feedback if ball benefits opponent (pocketing wrong group)
+            elif ball_num != 8 and self.group_var.get():
+                self._check_opponent_ball_pocketed(ball_num, team)
+            
+            # Switch turn if needed (opponent's ball or foul)
+            if should_switch:
+                self.switch_turn()
         else:
+            # Unpocketing a ball (undo) - don't switch turns
             self.pool_table.unpocket_ball(ball_num)
+            
+            # Check if we need to clear group assignment (no balls pocketed anymore)
+            self._check_clear_group()
         
         self.update_scores()
+        self.update_progress_visualization()
         self.save_game_state()
     
+    def _should_switch_turn(self, ball_num: int, pocketing_team: int) -> bool:
+        """Determine if turn should switch based on which ball was pocketed.
+        
+        Returns True if turn should switch to other team.
+        """
+        group = self.group_var.get()
+        
+        # 8-ball - don't switch (game ending shot)
+        if ball_num == 8:
+            return False
+        
+        # No group assigned yet - will be assigned, keep turn
+        if not group:
+            return False
+        
+        # Determine which balls belong to the pocketing team
+        if group == "solids":
+            team1_balls = SOLIDS
+            team2_balls = STRIPES
+        else:
+            team1_balls = STRIPES
+            team2_balls = SOLIDS
+        
+        # Check if ball belongs to pocketing team
+        if pocketing_team == 1:
+            owns_ball = ball_num in team1_balls
+        else:
+            owns_ball = ball_num in team2_balls
+        
+        # Switch turn if pocketed opponent's ball
+        return not owns_ball
+    
+    def _check_early_8ball(self, team: int) -> bool:
+        """Check if pocketing the 8-ball would be early/illegal for the given team.
+        
+        Returns True if it's an early 8-ball (team hasn't cleared their balls).
+        """
+        group = self.group_var.get()
+        
+        if not group:
+            # No groups assigned yet - definitely early
+            return True
+        
+        # Determine which balls belong to the pocketing team
+        if group == "solids":
+            team_balls = SOLIDS if team == 1 else STRIPES
+        else:  # stripes
+            team_balls = STRIPES if team == 1 else SOLIDS
+        
+        # Count how many of the team's balls are still on the table
+        balls_remaining = sum(
+            1 for ball in team_balls 
+            if self.pool_table.ball_states[ball] == 'table'
+        )
+        
+        # Early 8-ball if any balls remain
+        return balls_remaining > 0
+    
+    def _check_opponent_ball_pocketed(self, ball_num: int, pocketing_team: int):
+        """Check if the pocketed ball belongs to the opponent and flash their score.
+        
+        In 8-ball, pocketing opponent's ball benefits them (ball stays down, counts for them).
+        """
+        group = self.group_var.get()
+        
+        # Determine which balls belong to which team
+        if group == "solids":
+            team1_balls = SOLIDS
+            team2_balls = STRIPES
+        else:  # stripes
+            team1_balls = STRIPES
+            team2_balls = SOLIDS
+        
+        # Check if ball belongs to opponent
+        if pocketing_team == 1 and ball_num in team2_balls:
+            # Team 1 pocketed Team 2's ball - benefits Team 2
+            flash_widget(self.team2_score_label, flash_color="#2196F3", times=2)
+        elif pocketing_team == 2 and ball_num in team1_balls:
+            # Team 2 pocketed Team 1's ball - benefits Team 1
+            flash_widget(self.team1_score_label, flash_color="#4CAF50", times=2)
+    
+    def _auto_assign_group(self, ball_num: int, team: int):
+        """Auto-assign groups based on the first ball pocketed."""
+        # Determine if ball is solid or stripe
+        is_solid = ball_num in SOLIDS
+        is_stripe = ball_num in STRIPES
+        
+        if is_solid:
+            # Team that pocketed gets solids
+            if team == 1:
+                self.set_group("solids", save=False)
+            else:
+                self.set_group("stripes", save=False)  # Team 2 gets solids, so Team 1 gets stripes
+        elif is_stripe:
+            # Team that pocketed gets stripes
+            if team == 1:
+                self.set_group("stripes", save=False)
+            else:
+                self.set_group("solids", save=False)  # Team 2 gets stripes, so Team 1 gets solids
+        
+        # Show notification
+        group = self.group_var.get()
+        if group:
+            team1_group = "Solids (1-7)" if group == "solids" else "Stripes (9-15)"
+            team2_group = "Stripes (9-15)" if group == "solids" else "Solids (1-7)"
+            # Flash the group labels to indicate auto-assignment
+            flash_widget(self.team1_group_label, flash_color="#4CAF50", times=2)
+            flash_widget(self.team2_group_label, flash_color="#2196F3", times=2)
+    
+    def _check_clear_group(self):
+        """Check if groups should be cleared (no non-8 balls pocketed)."""
+        # Count pocketed non-8 balls
+        pocketed_balls = [
+            ball for ball, state in self.pool_table.ball_states.items()
+            if state.startswith('pocketed_') and ball != 8
+        ]
+        
+        # If no non-8 balls are pocketed, clear the group assignment
+        if not pocketed_balls and self.group_var.get():
+            self.group_var.set("")
+            self.pool_table.set_team_group(None)
+            self.team1_group_label.configure(text="Group: -")
+            self.team2_group_label.configure(text="Group: -")
+    
     def update_scores(self):
-        """Calculate and update displayed scores."""
+        """Calculate and update displayed scores based on team groups.
+        
+        Scoring rules (standard 8-ball):
+        - Each ball in a team's group is worth 1 point when pocketed
+        - Balls count for the team that OWNS them (by color), not who pocketed them
+        - The 8-ball is worth 3 points ONLY when legally pocketed 
+          (after team has cleared all their assigned balls)
+        - Total possible points: 7 (solids) + 7 (stripes) + 3 (8-ball) = 17
+        """
         team1_score = 0
         team2_score = 0
         
+        group = self.group_var.get()
+        
+        if not group:
+            # No group assigned yet - show 0 for both until groups are determined
+            self.team1_score_label.configure(text="0")
+            self.team2_score_label.configure(text="0")
+            return
+        
+        # Determine which balls belong to which team
+        if group == "solids":
+            team1_balls = SOLIDS  # Team 1 has solids
+            team2_balls = STRIPES  # Team 2 has stripes
+        else:  # stripes
+            team1_balls = STRIPES  # Team 1 has stripes
+            team2_balls = SOLIDS  # Team 2 has solids
+        
+        # Count pocketed balls (regardless of who pocketed them - ball ownership matters)
+        team1_balls_pocketed = 0
+        team2_balls_pocketed = 0
+        eight_ball_pocketed = False
+        eight_ball_pocketing_team = None
+        
         for ball_num, state in self.pool_table.ball_states.items():
-            if state == 'pocketed_team1':
-                if ball_num == 8:
-                    team1_score += 3
-                else:
+            if state.startswith('pocketed_'):
+                if ball_num in team1_balls:
+                    # This ball belongs to Team 1's group - counts for Team 1
                     team1_score += 1
-            elif state == 'pocketed_team2':
-                if ball_num == 8:
-                    team2_score += 3
-                else:
+                    team1_balls_pocketed += 1
+                elif ball_num in team2_balls:
+                    # This ball belongs to Team 2's group - counts for Team 2
                     team2_score += 1
+                    team2_balls_pocketed += 1
+                elif ball_num == 8:
+                    eight_ball_pocketed = True
+                    eight_ball_pocketing_team = int(state[-1])
+        
+        # Handle 8-ball scoring (only legal if all your balls are cleared first)
+        if eight_ball_pocketed and eight_ball_pocketing_team:
+            if eight_ball_pocketing_team == 1:
+                # Team 1 pocketed the 8-ball - only legal if all their balls are cleared
+                if team1_balls_pocketed == 7:
+                    team1_score += 3  # Legal 8-ball pocket
+                # else: early/illegal 8-ball - no points (handled by early_8ball button)
+            elif eight_ball_pocketing_team == 2:
+                # Team 2 pocketed the 8-ball - only legal if all their balls are cleared
+                if team2_balls_pocketed == 7:
+                    team2_score += 3  # Legal 8-ball pocket
         
         self.team1_score_label.configure(text=str(team1_score))
         self.team2_score_label.configure(text=str(team2_score))
@@ -767,13 +1267,20 @@ class ScorecardView(ctk.CTkFrame):
             # Reset and set score
             self.pool_table.reset_balls()
             
+            # Set groups (team gets solids for golden break convention)
+            if team == 1:
+                self.set_group("solids", save=False)
+            else:
+                self.set_group("stripes", save=False)
+            
             # Pocket all balls for winning team
             for ball_num in range(1, 16):
                 self.pool_table.pocket_ball(ball_num, team)
             
             self.update_scores()
+            self.update_progress_visualization()
             
-            # Save with golden break flag
+            # Save with golden break flag (17 points)
             if team == 1:
                 self.team1_score_label.configure(text="17")
                 self.team2_score_label.configure(text="0")
@@ -814,6 +1321,9 @@ class ScorecardView(ctk.CTkFrame):
             is_golden,
             early_8ball_team
         )
+        
+        # Set game over state - dim turn indicators
+        self.set_game_over_state()
         
         self.update_match_status()
         
