@@ -4,6 +4,7 @@ Handles profile picture selection, avatars, and image management.
 """
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import Canvas, filedialog
 from PIL import Image, ImageTk, ImageDraw
 import os
@@ -80,7 +81,7 @@ class AvatarGenerator:
                 parent_bg = parent_bg[1]  # Dark mode color
             if not parent_bg or parent_bg == "transparent":
                 parent_bg = "#252540"
-        except:
+        except (tk.TclError, AttributeError):
             parent_bg = "#252540"
         
         canvas = Canvas(parent, width=size, height=size, 
@@ -162,7 +163,7 @@ class ProfilePicture(ctk.CTkFrame):
             if not parent_bg or parent_bg == "transparent":
                 return "#252540"
             return parent_bg
-        except:
+        except (tk.TclError, AttributeError):
             return "#252540"
     
     def _display_image(self):

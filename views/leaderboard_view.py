@@ -182,7 +182,7 @@ class LeaderboardView(ctk.CTkFrame):
                     player_name=player.name
                 )
                 pic.pack(pady=3)
-            except:
+            except (OSError, FileNotFoundError, AttributeError):
                 pass
             
             # Name
@@ -239,7 +239,7 @@ class LeaderboardView(ctk.CTkFrame):
                 player_name=player.name
             )
             pic.pack(expand=True)
-        except:
+        except (OSError, FileNotFoundError, AttributeError):
             pass
         
         # Name

@@ -169,9 +169,10 @@ class TableTrackerView(ctk.CTkFrame):
     
     def update_timers(self):
         """Update match duration timers and clock."""
-        # Update current time
+        # Update current time (emoji separate from strftime to avoid Windows encoding issues)
         now = datetime.now()
-        self.time_label.configure(text=now.strftime("🕐 %I:%M %p"))
+        time_str = now.strftime("%I:%M %p")
+        self.time_label.configure(text=f"Clock: {time_str}")
         
         # Update match timers
         for table_num, timer_info in self.timer_labels.items():
@@ -183,7 +184,7 @@ class TableTrackerView(ctk.CTkFrame):
                         elapsed = now - start_dt.replace(tzinfo=None)
                         minutes = int(elapsed.total_seconds() // 60)
                         timer_info['label'].configure(text=f"⏱️ {minutes} min")
-                    except:
+                    except (ValueError, AttributeError, TypeError):
                         pass
         
         # Schedule next update
@@ -217,7 +218,7 @@ class TableTrackerView(ctk.CTkFrame):
         
         # Ensure minimum sizes
         card_width = max(250, card_width)
-        card_height = max(180, card_height)
+        card_height = max(200, card_height)
         
         return card_width, card_height
     
@@ -439,20 +440,20 @@ class TableTrackerView(ctk.CTkFrame):
         else:
             # Empty state with cool visual
             empty_frame = ctk.CTkFrame(frame, fg_color="transparent")
-            empty_frame.pack(expand=True, fill="both", padx=12, pady=10)
+            empty_frame.pack(expand=True, fill="both", padx=12, pady=8)
             
-            # Mini pool table visual - responsive sizing
-            table_width = max(80, int(card_width * 0.45))
-            table_height = max(50, int(card_height * 0.35))
+            # Mini pool table visual - responsive sizing (smaller to leave room for text)
+            table_width = max(70, int(card_width * 0.38))
+            table_height = max(40, int(card_height * 0.28))
             
             table_visual = ctk.CTkFrame(empty_frame, fg_color="#0d4a1c", corner_radius=8, 
                                        width=table_width, height=table_height)
-            table_visual.pack(pady=(15, 10))
+            table_visual.pack(pady=(10, 8))
             table_visual.pack_propagate(False)
             
             # Inner felt - responsive
-            felt_width = max(60, int(table_width * 0.85))
-            felt_height = max(35, int(table_height * 0.75))
+            felt_width = max(50, int(table_width * 0.85))
+            felt_height = max(28, int(table_height * 0.75))
             felt = ctk.CTkFrame(table_visual, fg_color="#1a5a2a", corner_radius=5,
                                width=felt_width, height=felt_height)
             felt.place(relx=0.5, rely=0.5, anchor="center")
@@ -462,14 +463,14 @@ class TableTrackerView(ctk.CTkFrame):
                 text="Ready for players",
                 font=get_font(13),
                 text_color="#666666"
-            ).pack(pady=5)
+            ).pack(pady=(8, 3))
             
             ctk.CTkLabel(
                 empty_frame,
                 text="🎯 Start a match!",
-                font=get_font(11),
+                font=get_font(12),
                 text_color="#4CAF50"
-            ).pack(pady=(0, 10))
+            ).pack(pady=(0, 12))
         
         # Bind click events to all children for active matches
         if is_clickable and match and self.on_match_click:
@@ -477,7 +478,7 @@ class TableTrackerView(ctk.CTkFrame):
                 widget.bind("<Button-1>", lambda e, mid=match_id: self.on_match_click(mid))
                 try:
                     widget.configure(cursor="hand2")
-                except:
+                except (AttributeError, KeyError):
                     pass
                 for child in widget.winfo_children():
                     bind_click_recursive(child, match_id)

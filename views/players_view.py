@@ -40,12 +40,12 @@ class PlayersView(ctk.CTkFrame):
         # Import players button
         import_btn = ctk.CTkButton(
             btn_container,
-            text="📂 Import",
+            text="Import",
             font=get_font(13),
             fg_color="#6b4e8a",
             hover_color="#5b3e7a",
             height=40,
-            width=90,
+            width=80,
             command=self.import_players
         )
         import_btn.pack(side="left", padx=5)
@@ -53,15 +53,28 @@ class PlayersView(ctk.CTkFrame):
         # Clear all players button
         clear_btn = ctk.CTkButton(
             btn_container,
-            text="🗑️ Clear All",
+            text="Clear All",
             font=get_font(13),
             fg_color="#c44536",
             hover_color="#a43526",
             height=40,
-            width=100,
+            width=80,
             command=self.clear_all_players
         )
         clear_btn.pack(side="left", padx=5)
+        
+        # Bulk add players button
+        bulk_btn = ctk.CTkButton(
+            btn_container,
+            text="+ Bulk Add",
+            font=get_font(13),
+            fg_color="#3d5a80",
+            hover_color="#2d4a70",
+            height=40,
+            width=100,
+            command=self.show_bulk_add_dialog
+        )
+        bulk_btn.pack(side="left", padx=5)
         
         # Add player button with hover effect
         add_btn = ctk.CTkButton(
@@ -498,6 +511,120 @@ class PlayersView(ctk.CTkFrame):
             btn_frame, text="Save Player", width=120, height=40,
             fg_color="#2d7a3e", hover_color="#1a5f2a",
             command=save
+        ).pack(side="left", padx=10)
+    
+    def show_bulk_add_dialog(self):
+        """Show dialog for adding multiple players at once."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Bulk Add Players")
+        dialog.geometry("550x550")
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self.winfo_toplevel().winfo_x() + (self.winfo_toplevel().winfo_width() // 2) - 275
+        y = self.winfo_toplevel().winfo_y() + (self.winfo_toplevel().winfo_height() // 2) - 275
+        dialog.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(
+            dialog, text="Bulk Add Players",
+            font=get_font(22, "bold")
+        ).pack(pady=(20, 5))
+        
+        ctk.CTkLabel(
+            dialog, text="Enter one name per line",
+            font=get_font(14),
+            text_color="#888888"
+        ).pack(pady=(0, 15))
+        
+        # Text area for names
+        text_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        text_frame.pack(fill="both", expand=True, padx=30, pady=10)
+        
+        names_textbox = ctk.CTkTextbox(
+            text_frame,
+            font=get_font(14),
+            fg_color="#252540",
+            corner_radius=10,
+            height=280
+        )
+        names_textbox.pack(fill="both", expand=True)
+        names_textbox.insert("1.0", "# Example:\n# John Smith\n# Jane Doe\n# Mike Johnson\n")
+        
+        # Info label
+        self.bulk_info_label = ctk.CTkLabel(
+            dialog,
+            text="",
+            font=get_font(12),
+            text_color="#888888"
+        )
+        self.bulk_info_label.pack(pady=5)
+        
+        def update_count(*args):
+            text = names_textbox.get("1.0", "end-1c")
+            lines = [line.strip() for line in text.split('\n') 
+                    if line.strip() and not line.strip().startswith('#')]
+            count = len(lines)
+            self.bulk_info_label.configure(text=f"{count} player{'s' if count != 1 else ''} to add")
+        
+        # Bind text change to update count
+        names_textbox.bind("<KeyRelease>", update_count)
+        update_count()
+        
+        def save_bulk():
+            text = names_textbox.get("1.0", "end-1c")
+            names = [line.strip() for line in text.split('\n') 
+                    if line.strip() and not line.strip().startswith('#')]
+            
+            if not names:
+                messagebox.showerror("Error", "No names entered.\n\nEnter at least one name (lines starting with # are ignored).")
+                return
+            
+            added = 0
+            skipped = []
+            
+            for name in names:
+                try:
+                    self.db.add_player(name, "", "", "")
+                    added += 1
+                except Exception as e:
+                    if "UNIQUE" in str(e):
+                        skipped.append(f"{name} (already exists)")
+                    else:
+                        skipped.append(f"{name} ({str(e)})")
+            
+            dialog.destroy()
+            self.load_players()
+            
+            # Show results
+            if added > 0:
+                flash_widget(self.players_container, "#4CAF50", times=2)
+            
+            result_msg = f"Successfully added {added} player{'s' if added != 1 else ''}!"
+            if skipped:
+                result_msg += f"\n\nSkipped {len(skipped)}:\n" + "\n".join(skipped[:10])
+                if len(skipped) > 10:
+                    result_msg += f"\n... and {len(skipped) - 10} more"
+            
+            if added > 0:
+                messagebox.showinfo("Bulk Add Complete", result_msg)
+            else:
+                messagebox.showwarning("No Players Added", result_msg)
+        
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=20)
+        
+        ctk.CTkButton(
+            btn_frame, text="Cancel", width=100, height=40,
+            fg_color="#555555", hover_color="#444444",
+            command=dialog.destroy
+        ).pack(side="left", padx=10)
+        
+        ctk.CTkButton(
+            btn_frame, text="Add All Players", width=140, height=40,
+            fg_color="#2d7a3e", hover_color="#1a5f2a",
+            command=save_bulk
         ).pack(side="left", padx=10)
     
     def show_edit_dialog(self, player):

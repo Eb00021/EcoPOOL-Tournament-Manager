@@ -98,7 +98,7 @@ class DatabaseManager:
         # Add profile_picture column if it doesn't exist (migration for existing DBs)
         try:
             cursor.execute("ALTER TABLE players ADD COLUMN profile_picture TEXT DEFAULT ''")
-        except:
+        except sqlite3.OperationalError:
             pass  # Column already exists
         
         # League nights table
@@ -338,6 +338,12 @@ class DatabaseManager:
             if row['team2_player2_id']:
                 team2_players.append(row['team2_player2_id'])
             
+            # Get breaking_team safely (sqlite3.Row doesn't support .get())
+            try:
+                breaking_team = row['breaking_team']
+            except (KeyError, IndexError):
+                breaking_team = 1
+            
             # Update stats for team 1 players
             for pid in team1_players:
                 if pid not in stats:
@@ -346,7 +352,7 @@ class DatabaseManager:
                 stats[pid]['total_points'] += row['team1_score']
                 if row['winner_team'] == 1:
                     stats[pid]['games_won'] += 1
-                if row['golden_break'] and row.get('breaking_team', 1) == 1:
+                if row['golden_break'] and breaking_team == 1:
                     stats[pid]['golden_breaks'] += 1
             
             # Update stats for team 2 players
@@ -357,7 +363,7 @@ class DatabaseManager:
                 stats[pid]['total_points'] += row['team2_score']
                 if row['winner_team'] == 2:
                     stats[pid]['games_won'] += 1
-                if row['golden_break'] and row.get('breaking_team', 1) == 2:
+                if row['golden_break'] and breaking_team == 2:
                     stats[pid]['golden_breaks'] += 1
         
         return stats
@@ -386,17 +392,23 @@ class DatabaseManager:
             games_played += 1
             is_team1 = row['team1_player1_id'] == player.id or row['team1_player2_id'] == player.id
             
+            # Get breaking_team safely (sqlite3.Row doesn't support .get())
+            try:
+                breaking_team = row['breaking_team']
+            except (KeyError, IndexError):
+                breaking_team = 1
+            
             if is_team1:
                 total_points += row['team1_score']
                 if row['winner_team'] == 1:
                     games_won += 1
-                if row['golden_break'] and row.get('breaking_team', 1) == 1:
+                if row['golden_break'] and breaking_team == 1:
                     golden_breaks += 1
             else:
                 total_points += row['team2_score']
                 if row['winner_team'] == 2:
                     games_won += 1
-                if row['golden_break'] and row.get('breaking_team', 1) == 2:
+                if row['golden_break'] and breaking_team == 2:
                     golden_breaks += 1
         
         player.games_played = games_played
@@ -567,6 +579,60 @@ class DatabaseManager:
             players.sort(key=lambda p: (-p.avg_points, -p.games_won))
         
         return players
+    
+    def get_historical_team_matchups(self) -> set[frozenset]:
+        """Get all historical team matchups as a set of frozensets.
+        
+        Each matchup is represented as a frozenset containing two team tuples.
+        This allows checking if a particular team pairing has occurred before.
+        
+        Returns:
+            Set of frozensets, where each frozenset contains two tuples 
+            representing the teams that played (sorted player IDs).
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT team1_player1_id, team1_player2_id, 
+                   team2_player1_id, team2_player2_id
+            FROM matches
+        ''')
+        
+        matchups = set()
+        for row in cursor.fetchall():
+            # Create normalized team representations (sorted tuples)
+            team1 = tuple(sorted(filter(None, [row['team1_player1_id'], row['team1_player2_id']])))
+            team2 = tuple(sorted(filter(None, [row['team2_player1_id'], row['team2_player2_id']])))
+            
+            # Use frozenset so order of teams doesn't matter (A vs B == B vs A)
+            matchup = frozenset([team1, team2])
+            matchups.add(matchup)
+        
+        return matchups
+    
+    def get_matchup_counts(self) -> dict:
+        """Get count of how many times each team matchup has occurred.
+        
+        Returns:
+            Dict mapping frozenset matchups to their occurrence count.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT team1_player1_id, team1_player2_id, 
+                   team2_player1_id, team2_player2_id
+            FROM matches
+        ''')
+        
+        matchup_counts = {}
+        for row in cursor.fetchall():
+            team1 = tuple(sorted(filter(None, [row['team1_player1_id'], row['team1_player2_id']])))
+            team2 = tuple(sorted(filter(None, [row['team2_player1_id'], row['team2_player2_id']])))
+            matchup = frozenset([team1, team2])
+            
+            matchup_counts[matchup] = matchup_counts.get(matchup, 0) + 1
+        
+        return matchup_counts
     
     # ============ League Night Operations ============
     

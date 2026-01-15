@@ -604,3 +604,195 @@ class Exporter:
             return True, f"Imported {imported_matches} matches ({imported_games} games), skipped {skipped_matches}."
         except Exception as e:
             return False, f"Error importing matches: {e}"
+    
+    def export_match_diagram_pdf(self, pairings_data: dict, filepath: str, 
+                                  is_multi_round: bool = False) -> bool:
+        """
+        Export initial match pairings diagram to PDF.
+        
+        Args:
+            pairings_data: Dict containing match pairings (single round or multi-round)
+            filepath: Output PDF file path
+            is_multi_round: If True, pairings_data contains multiple rounds
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            doc = SimpleDocTemplate(filepath, pagesize=letter)
+            elements = []
+            
+            # Title
+            elements.append(Paragraph("WVU EcoPOOL League", self.title_style))
+            elements.append(Paragraph("League Night Match Schedule", self.subtitle_style))
+            elements.append(Paragraph(
+                f"<i>Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</i>",
+                ParagraphStyle('Date', parent=self.styles['Normal'], 
+                              alignment=TA_CENTER, textColor=colors.grey)
+            ))
+            elements.append(Spacer(1, 20))
+            
+            if is_multi_round:
+                # Multi-round format
+                rounds = pairings_data.get('rounds', [])
+                total_rounds = pairings_data.get('total_rounds', 0)
+                games_per_player = pairings_data.get('games_per_player_display', {})
+                
+                # Summary info
+                summary_text = f"<b>Total Rounds:</b> {total_rounds}"
+                if pairings_data.get('has_repeats', False):
+                    summary_text += f" | <b>Repeat Matchups:</b> {pairings_data.get('total_repeats', 0)}"
+                elements.append(Paragraph(summary_text, self.styles['Normal']))
+                elements.append(Spacer(1, 10))
+                
+                # Games per player summary
+                if games_per_player:
+                    min_games = pairings_data.get('min_games', 0)
+                    max_games = pairings_data.get('max_games', 0)
+                    elements.append(Paragraph(
+                        f"<b>Games per player:</b> {min_games}-{max_games}",
+                        self.styles['Normal']
+                    ))
+                    elements.append(Spacer(1, 15))
+                
+                for round_data in rounds:
+                    # Round header
+                    round_num = round_data.get('round_num', 1)
+                    round_repeats = round_data.get('round_repeats', 0)
+                    
+                    round_header = f"Round {round_num}"
+                    if round_repeats > 0:
+                        round_header += f" ({round_repeats} repeat{'s' if round_repeats > 1 else ''})"
+                    
+                    elements.append(Paragraph(
+                        round_header,
+                        ParagraphStyle('RoundHeader', parent=self.styles['Heading3'],
+                                      fontSize=14, textColor=colors.HexColor('#2d7a3e'),
+                                      spaceAfter=8)
+                    ))
+                    
+                    # Teams for this round
+                    team_display = round_data.get('team_display', [])
+                    if team_display:
+                        teams_text = " | ".join([f"<b>T{i+1}:</b> {name}" 
+                                                for i, name in enumerate(team_display)])
+                        elements.append(Paragraph(
+                            teams_text,
+                            ParagraphStyle('Teams', parent=self.styles['Normal'],
+                                          fontSize=9, textColor=colors.grey)
+                        ))
+                        elements.append(Spacer(1, 5))
+                    
+                    # Matches table for this round
+                    self._add_matches_table(elements, round_data.get('match_display', []))
+                    elements.append(Spacer(1, 15))
+            
+            else:
+                # Single round format
+                team_display = pairings_data.get('team_display', [])
+                
+                # Teams section
+                if team_display:
+                    elements.append(Paragraph("Teams", self.subtitle_style))
+                    
+                    teams_data = [['Team #', 'Players']]
+                    for i, team_name in enumerate(team_display, 1):
+                        teams_data.append([f"Team {i}", team_name])
+                    
+                    teams_table = Table(teams_data, colWidths=[1*inch, 4.5*inch])
+                    teams_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d7a3e')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('BOX', (0, 0), (-1, -1), 1, colors.black),
+                        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                        ('TOPPADDING', (0, 0), (-1, -1), 8),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), 
+                         [colors.white, colors.HexColor('#f5f5f5')]),
+                    ]))
+                    elements.append(teams_table)
+                    elements.append(Spacer(1, 20))
+                
+                # Matches section
+                elements.append(Paragraph("Matches (Best of 1)", self.subtitle_style))
+                
+                if pairings_data.get('has_repeats', False):
+                    elements.append(Paragraph(
+                        f"<i>Note: {pairings_data.get('total_repeats', 0)} repeat matchup(s) - "
+                        "could not avoid all repeats</i>",
+                        ParagraphStyle('Note', parent=self.styles['Normal'],
+                                      fontSize=10, textColor=colors.HexColor('#ff9800'))
+                    ))
+                    elements.append(Spacer(1, 5))
+                
+                self._add_matches_table(elements, pairings_data.get('match_display', []))
+            
+            elements.append(Spacer(1, 30))
+            
+            # Footer
+            footer = Paragraph(
+                f"<i>Generated by EcoPOOL League Manager</i>",
+                ParagraphStyle('Footer', parent=self.styles['Normal'], fontSize=9, 
+                              textColor=colors.grey, alignment=TA_CENTER)
+            )
+            elements.append(footer)
+            
+            doc.build(elements)
+            return True
+            
+        except Exception as e:
+            print(f"Error exporting match diagram: {e}")
+            return False
+    
+    def _add_matches_table(self, elements: list, match_display: list):
+        """Helper to add a matches table to PDF elements."""
+        if not match_display:
+            elements.append(Paragraph("No matches generated.", self.styles['Normal']))
+            return
+        
+        matches_data = [['Match', 'Team 1', 'VS', 'Team 2', 'Status']]
+        
+        for match in match_display:
+            is_repeat = match.get('is_repeat', False)
+            repeat_count = match.get('repeat_count', 0)
+            
+            status = "New"
+            if is_repeat:
+                status = f"Repeat (x{repeat_count})"
+            
+            matches_data.append([
+                f"Match {match['match_num']}",
+                match['team1'],
+                'VS',
+                match['team2'],
+                status
+            ])
+        
+        matches_table = Table(matches_data, colWidths=[0.8*inch, 2*inch, 0.5*inch, 2*inch, 1*inch])
+        matches_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOX', (0, 0), (-1, -1), 1, colors.black),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f4f8')]),
+        ]))
+        
+        # Highlight repeat rows with orange background
+        for i, match in enumerate(match_display, 1):
+            if match.get('is_repeat', False):
+                matches_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fff3e0')),
+                    ('TEXTCOLOR', (-1, i), (-1, i), colors.HexColor('#e65100')),
+                ]))
+        
+        elements.append(matches_table)

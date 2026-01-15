@@ -4,6 +4,7 @@ Provides cool animations and visual effects for the application.
 """
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import Canvas
 import math
 import random
@@ -36,14 +37,14 @@ class AnimationManager:
                 # Simple toggle between colors
                 try:
                     widget.configure(fg_color=color2 if step % 2 == 0 else color1)
-                except:
+                except (tk.TclError, AttributeError):
                     pass
                 
                 widget.after(step_time, lambda: animate(step + 1))
             else:
                 try:
                     widget.configure(fg_color=color1)
-                except:
+                except (tk.TclError, AttributeError):
                     pass
         
         animate()
@@ -64,7 +65,7 @@ class AnimationManager:
                 
                 try:
                     widget.place_configure(y=original_y - offset)
-                except:
+                except (tk.TclError, AttributeError):
                     pass
                 
                 widget.after(step_time, lambda: animate(step + 1))
@@ -82,7 +83,7 @@ class AnimationManager:
                 offset = int(amplitude * math.sin(step * math.pi * 4) * (1 - step/steps))
                 try:
                     widget.place_configure(x=widget.winfo_x() + offset)
-                except:
+                except (tk.TclError, AttributeError):
                     pass
                 widget.after(step_time, lambda: animate(step + 1))
         
@@ -93,7 +94,7 @@ class AnimationManager:
         """Create a glowing border effect."""
         try:
             original_border = widget.cget("border_color")
-        except:
+        except (tk.TclError, AttributeError):
             original_border = "transparent"
         
         steps = 30
@@ -106,12 +107,12 @@ class AnimationManager:
                 if t < 0.5:
                     try:
                         widget.configure(border_color=glow_color, border_width=3)
-                    except:
+                    except (tk.TclError, AttributeError):
                         pass
                 else:
                     try:
                         widget.configure(border_color=original_border, border_width=0)
-                    except:
+                    except (tk.TclError, AttributeError):
                         pass
                 widget.after(step_time, lambda: animate(step + 1))
         
@@ -125,12 +126,12 @@ class Confetti(Canvas):
         # Get parent background color
         try:
             parent_bg = parent.cget("bg")
-        except:
+        except (tk.TclError, AttributeError):
             try:
                 parent_bg = parent.cget("fg_color")
                 if isinstance(parent_bg, tuple):
                     parent_bg = parent_bg[1]
-            except:
+            except (tk.TclError, AttributeError):
                 parent_bg = "#161b22"
         
         if not parent_bg or parent_bg == "transparent":
@@ -241,14 +242,14 @@ class AnimatedButton(ctk.CTkButton):
             if self.original_fg_color and self.original_fg_color != "transparent":
                 lighter = self._lighten_color(self.original_fg_color, 20)
                 self.configure(fg_color=lighter)
-        except:
+        except (tk.TclError, AttributeError, ValueError):
             pass
     
     def _on_leave(self, event):
         """Handle mouse leave."""
         try:
             self.configure(fg_color=self.original_fg_color)
-        except:
+        except (tk.TclError, AttributeError):
             pass
     
     def _lighten_color(self, color: str, amount: int) -> str:
@@ -301,20 +302,20 @@ class AnimatedCard(ctk.CTkFrame):
             if not (card_x <= x <= card_x + card_w and card_y <= y <= card_y + card_h):
                 self.is_hovered = False
                 self._remove_hover_style()
-        except:
+        except (tk.TclError, RuntimeError):
             self.is_hovered = False
             self._remove_hover_style()
     
     def _apply_hover_style(self):
         try:
             self.configure(fg_color=self._hover_color)
-        except:
+        except (tk.TclError, AttributeError):
             pass
     
     def _remove_hover_style(self):
         try:
             self.configure(fg_color=self.original_fg_color)
-        except:
+        except (tk.TclError, AttributeError):
             pass
     
     def _lighten_color(self, color: str, amount: int) -> str:
@@ -363,12 +364,12 @@ class StarBurst(Canvas):
         # Get parent background color
         try:
             parent_bg = parent.cget("bg")
-        except:
+        except (tk.TclError, AttributeError):
             try:
                 parent_bg = parent.cget("fg_color")
                 if isinstance(parent_bg, tuple):
                     parent_bg = parent_bg[1]
-            except:
+            except (tk.TclError, AttributeError):
                 parent_bg = "#161b22"
         
         if not parent_bg or parent_bg == "transparent":
@@ -455,7 +456,7 @@ class ProgressRing(ctk.CTkFrame):
                 parent_bg = parent_bg[1]
             if not parent_bg or parent_bg == "transparent":
                 parent_bg = "#252540"
-        except:
+        except (tk.TclError, AttributeError):
             parent_bg = "#252540"
         
         self.canvas = Canvas(self, width=size, height=size,
@@ -545,7 +546,7 @@ def flash_widget(widget, flash_color: str = "#4CAF50", times: int = 3):
     """Flash a widget with a color."""
     try:
         original_color = widget.cget("fg_color")
-    except:
+    except (tk.TclError, AttributeError):
         original_color = "#252540"
     
     def flash(count=0):
@@ -553,7 +554,7 @@ def flash_widget(widget, flash_color: str = "#4CAF50", times: int = 3):
             color = flash_color if count % 2 == 0 else original_color
             try:
                 widget.configure(fg_color=color)
-            except:
+            except (tk.TclError, AttributeError):
                 pass
             widget.after(150, lambda: flash(count + 1))
     

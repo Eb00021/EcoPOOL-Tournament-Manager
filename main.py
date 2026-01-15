@@ -63,6 +63,10 @@ class EcoPoolApp(ctk.CTk):
         self.current_view = None
         self.views = {}
         
+        # Persist generated pairings across view changes
+        self.pending_pairings = None
+        self.pending_pairings_multi_round = False
+        
         # Setup UI
         self.setup_ui()
         
@@ -84,29 +88,44 @@ class EcoPoolApp(ctk.CTk):
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
         
-        # Logo/Title
+        # Logo/Title (fixed at top)
         logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        logo_frame.pack(fill="x", padx=20, pady=25)
+        logo_frame.pack(fill="x", padx=20, pady=(15, 10))
+        
+        logo_inner = ctk.CTkFrame(logo_frame, fg_color="transparent")
+        logo_inner.pack()
         
         ctk.CTkLabel(
-            logo_frame,
+            logo_inner,
             text="🎱",
-            font=get_font(42)
-        ).pack()
+            font=get_font(36)
+        ).pack(side="left", padx=(0, 8))
+        
+        title_frame = ctk.CTkFrame(logo_inner, fg_color="transparent")
+        title_frame.pack(side="left")
         
         ctk.CTkLabel(
-            logo_frame,
+            title_frame,
             text="EcoPOOL",
-            font=get_font(28, "bold"),
+            font=get_font(22, "bold"),
             text_color="#4CAF50"
-        ).pack()
+        ).pack(anchor="w")
         
         ctk.CTkLabel(
-            logo_frame,
+            title_frame,
             text="League Manager",
-            font=get_font(14),
+            font=get_font(11),
             text_color="#888888"
-        ).pack()
+        ).pack(anchor="w")
+        
+        # Scrollable content area for navigation and data management
+        sidebar_scroll = ctk.CTkScrollableFrame(
+            self.sidebar, 
+            fg_color="transparent",
+            scrollbar_button_color="#333333",
+            scrollbar_button_hover_color="#444444"
+        )
+        sidebar_scroll.pack(fill="both", expand=True, padx=0, pady=0)
         
         # Navigation buttons
         self.nav_buttons = {}
@@ -122,131 +141,155 @@ class EcoPoolApp(ctk.CTk):
             ("leaderboard", "📊 Leaderboard", lambda: self.show_view("leaderboard")),
         ]
         
-        nav_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        nav_frame.pack(fill="x", padx=15, pady=10)
+        nav_frame = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
+        nav_frame.pack(fill="x", padx=10, pady=(5, 10))
         
         for key, text, command in nav_items:
             btn = ctk.CTkButton(
                 nav_frame,
                 text=text,
-                font=get_font(15),
-                height=45,
+                font=get_font(14),
+                height=40,
                 anchor="w",
                 fg_color="transparent",
                 hover_color="#1e3a1e",
                 text_color="#cccccc",
                 command=command
             )
-            btn.pack(fill="x", pady=3)
+            btn.pack(fill="x", pady=2)
             self.nav_buttons[key] = btn
         
         # Separator
-        ctk.CTkFrame(self.sidebar, height=2, fg_color="#333333").pack(fill="x", padx=20, pady=20)
+        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
         
-        # Quick stats
-        stats_frame = ctk.CTkFrame(self.sidebar, fg_color="#161b22", corner_radius=10)
-        stats_frame.pack(fill="x", padx=15, pady=10)
+        # Quick stats (compact)
+        stats_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
+        stats_frame.pack(fill="x", padx=10, pady=5)
         
-        ctk.CTkLabel(
-            stats_frame,
-            text="Quick Stats",
-            font=get_font(14, "bold"),
-            text_color="#888888"
-        ).pack(pady=(10, 5))
+        stats_inner = ctk.CTkFrame(stats_frame, fg_color="transparent")
+        stats_inner.pack(fill="x", padx=10, pady=8)
         
         self.stats_players_label = ctk.CTkLabel(
-            stats_frame,
-            text="Players: 0",
-            font=get_font(13)
+            stats_inner,
+            text="👥 0",
+            font=get_font(12)
         )
-        self.stats_players_label.pack(pady=2)
+        self.stats_players_label.pack(side="left", padx=5)
         
         self.stats_matches_label = ctk.CTkLabel(
-            stats_frame,
-            text="Matches: 0",
-            font=get_font(13)
+            stats_inner,
+            text="🎱 0",
+            font=get_font(12)
         )
-        self.stats_matches_label.pack(pady=2)
+        self.stats_matches_label.pack(side="left", padx=5)
         
         self.stats_active_label = ctk.CTkLabel(
-            stats_frame,
-            text="Active: 0",
-            font=get_font(13),
+            stats_inner,
+            text="🔴 0",
+            font=get_font(12),
             text_color="#4CAF50"
         )
-        self.stats_active_label.pack(pady=(2, 10))
+        self.stats_active_label.pack(side="left", padx=5)
         
         # Separator
-        ctk.CTkFrame(self.sidebar, height=2, fg_color="#333333").pack(fill="x", padx=20, pady=10)
+        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
         
         # Data Management section
-        data_frame = ctk.CTkFrame(self.sidebar, fg_color="#161b22", corner_radius=10)
-        data_frame.pack(fill="x", padx=15, pady=5)
+        data_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
+        data_frame.pack(fill="x", padx=10, pady=5)
         
         ctk.CTkLabel(
             data_frame,
             text="Data Management",
-            font=get_font(14, "bold"),
+            font=get_font(13, "bold"),
             text_color="#888888"
-        ).pack(pady=(10, 5))
+        ).pack(pady=(8, 5))
         
         ctk.CTkButton(
             data_frame,
             text="🆕 New Pool Night",
-            font=get_font(12),
-            height=32,
+            font=get_font(11),
+            height=30,
             fg_color="#c44536",
             hover_color="#a43526",
             command=self.new_pool_night
-        ).pack(fill="x", padx=10, pady=3)
+        ).pack(fill="x", padx=8, pady=2)
+        
+        # Matches section label
+        ctk.CTkLabel(
+            data_frame,
+            text="Matches",
+            font=get_font(10),
+            text_color="#666666"
+        ).pack(anchor="w", padx=10, pady=(5, 2))
+        
+        # Save/Load Matches row
+        save_load_frame = ctk.CTkFrame(data_frame, fg_color="transparent")
+        save_load_frame.pack(fill="x", padx=8, pady=2)
         
         ctk.CTkButton(
-            data_frame,
-            text="💾 Save Matches",
-            font=get_font(12),
-            height=32,
+            save_load_frame,
+            text="💾 Save",
+            font=get_font(11),
+            height=30,
+            width=95,
             fg_color="#3d5a80",
             hover_color="#2d4a70",
             command=self.save_matches
-        ).pack(fill="x", padx=10, pady=3)
+        ).pack(side="left", padx=(0, 2))
         
         ctk.CTkButton(
-            data_frame,
-            text="📂 Load Matches",
-            font=get_font(12),
-            height=32,
+            save_load_frame,
+            text="📂 Load",
+            font=get_font(11),
+            height=30,
+            width=95,
             fg_color="#3d5a80",
             hover_color="#2d4a70",
             command=self.load_matches
-        ).pack(fill="x", padx=10, pady=3)
+        ).pack(side="right", padx=(2, 0))
+        
+        # Players section label
+        ctk.CTkLabel(
+            data_frame,
+            text="Players",
+            font=get_font(10),
+            text_color="#666666"
+        ).pack(anchor="w", padx=10, pady=(5, 2))
+        
+        # Export/Import Players row
+        export_import_frame = ctk.CTkFrame(data_frame, fg_color="transparent")
+        export_import_frame.pack(fill="x", padx=8, pady=(2, 8))
         
         ctk.CTkButton(
-            data_frame,
-            text="👥 Export Players",
-            font=get_font(12),
-            height=32,
+            export_import_frame,
+            text="📤 Export",
+            font=get_font(11),
+            height=30,
+            width=95,
             fg_color="#6b4e8a",
             hover_color="#5b3e7a",
             command=self.export_players
-        ).pack(fill="x", padx=10, pady=3)
+        ).pack(side="left", padx=(0, 2))
         
         ctk.CTkButton(
-            data_frame,
-            text="👥 Import Players",
-            font=get_font(12),
-            height=32,
+            export_import_frame,
+            text="📥 Import",
+            font=get_font(11),
+            height=30,
+            width=95,
             fg_color="#6b4e8a",
             hover_color="#5b3e7a",
             command=self.import_players
-        ).pack(fill="x", padx=10, pady=(3, 10))
+        ).pack(side="right", padx=(2, 0))
         
-        # Version info at bottom
+        # Version info at bottom (fixed)
         ctk.CTkLabel(
             self.sidebar,
             text="v2.0 - WVU EcoCAR",
-            font=get_font(11),
+            font=get_font(10),
             text_color="#555555"
-        ).pack(side="bottom", pady=15)
+        ).pack(side="bottom", pady=8)
         
         # === MAIN CONTENT AREA ===
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="#161b22")
@@ -262,9 +305,9 @@ class EcoPoolApp(ctk.CTk):
         matches = self.db.get_all_matches(limit=1000)
         active = [m for m in matches if not m['is_complete']]
         
-        self.stats_players_label.configure(text=f"Players: {len(players)}")
-        self.stats_matches_label.configure(text=f"Matches: {len(matches)}")
-        self.stats_active_label.configure(text=f"Active: {len(active)}")
+        self.stats_players_label.configure(text=f"👥 {len(players)}")
+        self.stats_matches_label.configure(text=f"🎱 {len(matches)}")
+        self.stats_active_label.configure(text=f"🔴 {len(active)}")
     
     def set_active_nav(self, key: str):
         """Highlight the active navigation button."""
@@ -424,8 +467,13 @@ class EcoPoolApp(ctk.CTk):
             view = PlayersView(self.content, self.db)
             view.pack(fill="both", expand=True)
         elif view_name == "generator":
-            view = MatchGeneratorView(self.content, self.db, 
-                                     on_match_created=self.update_quick_stats)
+            view = MatchGeneratorView(
+                self.content, self.db, 
+                on_match_created=self.on_matches_created,
+                on_pairings_changed=self.on_pairings_changed,
+                initial_pairings=self.pending_pairings,
+                initial_multi_round=self.pending_pairings_multi_round
+            )
             view.pack(fill="both", expand=True)
         elif view_name == "scorecard":
             view = ScorecardView(self.content, self.db)
@@ -527,6 +575,18 @@ class EcoPoolApp(ctk.CTk):
                 messagebox.showinfo("Success", message)
             else:
                 messagebox.showerror("Error", message)
+    
+    def on_pairings_changed(self, pairings, is_multi_round):
+        """Called when generated pairings change in MatchGeneratorView."""
+        self.pending_pairings = pairings
+        self.pending_pairings_multi_round = is_multi_round
+    
+    def on_matches_created(self):
+        """Called when matches are created from the generator."""
+        # Clear pending pairings since they've been saved
+        self.pending_pairings = None
+        self.pending_pairings_multi_round = False
+        self.update_quick_stats()
     
     def go_to_scorecard(self, match_id: int):
         """Navigate to scorecard with a specific match selected."""

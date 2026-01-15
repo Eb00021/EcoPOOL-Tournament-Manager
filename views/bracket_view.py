@@ -311,8 +311,11 @@ class BracketCanvas(ctk.CTkFrame):
         p1_name = node.player1.name if node.player1 else "TBD"
         p1_seed = ""
         if round_num == 0 and node.player1:
-            idx = self.bracket.players.index(node.player1) + 1 if node.player1 in self.bracket.players else ""
-            p1_seed = f"#{idx} " if idx else ""
+            try:
+                idx = self.bracket.players.index(node.player1) + 1
+                p1_seed = f"#{idx} "
+            except (ValueError, AttributeError):
+                p1_seed = ""
         
         p1_color = self.colors['score'] if node.winner == node.player1 and node.winner else self.colors['text']
         self.canvas.create_text(
@@ -345,8 +348,11 @@ class BracketCanvas(ctk.CTkFrame):
         p2_name = node.player2.name if node.player2 else "TBD"
         p2_seed = ""
         if round_num == 0 and node.player2:
-            idx = self.bracket.players.index(node.player2) + 1 if node.player2 in self.bracket.players else ""
-            p2_seed = f"#{idx} " if idx else ""
+            try:
+                idx = self.bracket.players.index(node.player2) + 1
+                p2_seed = f"#{idx} "
+            except (ValueError, AttributeError):
+                p2_seed = ""
         
         p2_color = self.colors['score'] if node.winner == node.player2 and node.winner else self.colors['text']
         self.canvas.create_text(
@@ -718,7 +724,7 @@ class BracketView(ctk.CTkFrame):
                                     image_path=player.profile_picture,
                                     player_name=player.name)
                 pic.pack(side="left", padx=5)
-            except:
+            except (OSError, FileNotFoundError, AttributeError):
                 pass
             
             # Name
@@ -954,7 +960,7 @@ class BracketView(ctk.CTkFrame):
             try:
                 score1 = int(score1_entry.get())
                 score2 = int(score2_entry.get())
-            except:
+            except (ValueError, TypeError):
                 score1 = 2
                 score2 = 0
             
