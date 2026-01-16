@@ -86,6 +86,8 @@ class Match:
     queue_position: int = 0
     status: str = "queued"  # 'queued', 'live', 'completed'
     season_id: Optional[int] = None
+    # Round system - matches in same round can be played simultaneously
+    round_number: int = 1
     
 
 @dataclass
@@ -239,7 +241,8 @@ class DatabaseManager:
         for col, default in [("pair1_id", "INTEGER"), ("pair2_id", "INTEGER"), 
                              ("queue_position", "INTEGER DEFAULT 0"), 
                              ("status", "TEXT DEFAULT 'queued'"),
-                             ("season_id", "INTEGER")]:
+                             ("season_id", "INTEGER"),
+                             ("round_number", "INTEGER DEFAULT 1")]:
             try:
                 cursor.execute(f"ALTER TABLE matches ADD COLUMN {col} {default}")
             except sqlite3.OperationalError:
@@ -554,7 +557,7 @@ class DatabaseManager:
                      is_finals: bool = False, league_night_id: Optional[int] = None,
                      pair1_id: Optional[int] = None, pair2_id: Optional[int] = None,
                      queue_position: int = 0, status: str = "queued",
-                     season_id: Optional[int] = None) -> int:
+                     season_id: Optional[int] = None, round_number: int = 1) -> int:
         """Create a new match. Returns match ID."""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -562,11 +565,11 @@ class DatabaseManager:
             INSERT INTO matches 
             (league_night_id, team1_player1_id, team1_player2_id, 
              team2_player1_id, team2_player2_id, table_number, best_of, is_finals,
-             pair1_id, pair2_id, queue_position, status, season_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             pair1_id, pair2_id, queue_position, status, season_id, round_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (league_night_id, team1_p1, team1_p2, team2_p1, team2_p2, 
               table_number, best_of, 1 if is_finals else 0,
-              pair1_id, pair2_id, queue_position, status, season_id))
+              pair1_id, pair2_id, queue_position, status, season_id, round_number))
         conn.commit()
         return cursor.lastrowid
     
@@ -810,8 +813,41 @@ class DatabaseManager:
         )
         conn.commit()
     
-    def clear_matches(self):
-        """Clear all matches and games (for new pool night). Keeps players."""
+    def clear_matches(self, keep_completed: bool = True):
+        """Clear matches for new pool night. 
+        
+        Args:
+            keep_completed: If True, keeps completed matches and their games 
+                           (preserves leaderboard). If False, clears everything.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if keep_completed:
+            # Only clear incomplete matches and their games - preserve leaderboard data
+            cursor.execute('''
+                DELETE FROM games WHERE match_id IN (
+                    SELECT id FROM matches WHERE is_complete = 0
+                )
+            ''')
+            cursor.execute("DELETE FROM matches WHERE is_complete = 0")
+            # Clear only current league night's buy-ins and pairs
+            cursor.execute("DELETE FROM league_night_buyins")
+            cursor.execute("DELETE FROM league_night_pairs")
+            cursor.execute("DELETE FROM league_nights")
+        else:
+            # Full clear - also clears leaderboard
+            cursor.execute("DELETE FROM games")
+            cursor.execute("DELETE FROM matches")
+            cursor.execute("DELETE FROM league_night_buyins")
+            cursor.execute("DELETE FROM league_night_pairs")
+            cursor.execute("DELETE FROM league_nights")
+        
+        conn.commit()
+    
+    def reset_leaderboard(self):
+        """Reset all leaderboard data by clearing all matches and games.
+        This is a destructive operation - use with caution."""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM games")
@@ -1130,6 +1166,219 @@ class DatabaseManager:
         if status == 'completed':
             cursor.execute("UPDATE matches SET is_complete = 1 WHERE id = ?", (match_id,))
         conn.commit()
+    
+    # ============ Round System Operations ============
+    
+    def get_current_round(self, league_night_id: int) -> int:
+        """Get the current active round number for a league night.
+        Returns the lowest round number with incomplete matches, or 0 if no matches."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT MIN(round_number) as current_round
+            FROM matches 
+            WHERE league_night_id = ? AND status != 'completed'
+        ''', (league_night_id,))
+        row = cursor.fetchone()
+        return row['current_round'] if row and row['current_round'] else 0
+    
+    def is_round_complete(self, league_night_id: int, round_number: int) -> bool:
+        """Check if all matches in a round are completed."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) as incomplete
+            FROM matches 
+            WHERE league_night_id = ? AND round_number = ? AND status != 'completed'
+        ''', (league_night_id, round_number))
+        row = cursor.fetchone()
+        return row['incomplete'] == 0
+    
+    def get_matches_for_round(self, league_night_id: int, round_number: int) -> list[dict]:
+        """Get all matches for a specific round."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.round_number = ?
+            ORDER BY m.queue_position
+        ''', (league_night_id, round_number))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_total_rounds(self, league_night_id: int) -> int:
+        """Get the total number of rounds for a league night."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT MAX(round_number) as total_rounds
+            FROM matches WHERE league_night_id = ?
+        ''', (league_night_id,))
+        row = cursor.fetchone()
+        return row['total_rounds'] if row and row['total_rounds'] else 0
+    
+    def get_pairs_playing_in_round(self, league_night_id: int, round_number: int) -> set[int]:
+        """Get all pair IDs that are currently playing (live) in a round.
+        Used to prevent same pair from being at multiple tables."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT pair1_id, pair2_id
+            FROM matches 
+            WHERE league_night_id = ? AND round_number = ? AND status = 'live'
+        ''', (league_night_id, round_number))
+        
+        playing_pairs = set()
+        for row in cursor.fetchall():
+            if row['pair1_id']:
+                playing_pairs.add(row['pair1_id'])
+            if row['pair2_id']:
+                playing_pairs.add(row['pair2_id'])
+        return playing_pairs
+    
+    def can_start_match(self, match_id: int) -> tuple[bool, str]:
+        """Check if a match can be started.
+        Checks: 1) Match is in current round, 2) Pairs not already playing anywhere.
+        Returns (can_start, reason)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Get match details
+        cursor.execute('''
+            SELECT league_night_id, round_number, pair1_id, pair2_id
+            FROM matches WHERE id = ?
+        ''', (match_id,))
+        match = cursor.fetchone()
+        
+        if not match:
+            return False, "Match not found"
+        
+        if not match['league_night_id']:
+            return True, ""  # Legacy match without league night
+        
+        # Check if this match is in the current round
+        current_round = self.get_current_round(match['league_night_id'])
+        match_round = match['round_number'] or 1
+        
+        if match_round > current_round:
+            return False, f"This match is in Round {match_round}, but Round {current_round} is not complete yet"
+        
+        # Get ALL pairs currently playing (anywhere, not just this round)
+        playing_pairs = self.get_all_pairs_currently_playing(match['league_night_id'])
+        
+        # Check if either pair is already playing
+        if match['pair1_id'] and match['pair1_id'] in playing_pairs:
+            return False, "Pair 1 is already playing at another table"
+        if match['pair2_id'] and match['pair2_id'] in playing_pairs:
+            return False, "Pair 2 is already playing at another table"
+        
+        return True, ""
+    
+    def get_queued_matches_for_current_round(self, league_night_id: int) -> list[dict]:
+        """Get queued matches only from the current active round."""
+        current_round = self.get_current_round(league_night_id)
+        if current_round == 0:
+            return []
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.round_number = ? AND m.status = 'queued'
+            ORDER BY m.queue_position
+        ''', (league_night_id, current_round))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_next_available_match(self, league_night_id: int) -> Optional[dict]:
+        """Get the next queued match where neither pair is currently playing.
+        Only returns matches from the current round - never jumps to future rounds."""
+        queued_matches = self.get_queued_matches_for_current_round(league_night_id)
+        current_round = self.get_current_round(league_night_id)
+        
+        if not queued_matches or current_round == 0:
+            return None
+        
+        # Get ALL pairs currently playing live (not just in this round, but anywhere)
+        playing_pairs = self.get_all_pairs_currently_playing(league_night_id)
+        
+        for match in queued_matches:
+            # Only allow matches from the current round
+            if match.get('round_number', 1) != current_round:
+                continue
+                
+            pair1_available = match['pair1_id'] not in playing_pairs if match['pair1_id'] else True
+            pair2_available = match['pair2_id'] not in playing_pairs if match['pair2_id'] else True
+            
+            if pair1_available and pair2_available:
+                return match
+        
+        return None
+    
+    def get_all_pairs_currently_playing(self, league_night_id: int) -> set[int]:
+        """Get all pair IDs that are currently playing (live) in ANY match.
+        This prevents a pair from being at multiple tables simultaneously."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT pair1_id, pair2_id
+            FROM matches 
+            WHERE league_night_id = ? AND status = 'live'
+        ''', (league_night_id,))
+        
+        playing_pairs = set()
+        for row in cursor.fetchall():
+            if row['pair1_id']:
+                playing_pairs.add(row['pair1_id'])
+            if row['pair2_id']:
+                playing_pairs.add(row['pair2_id'])
+        return playing_pairs
+    
+    def is_round_in_progress(self, league_night_id: int, round_number: int) -> bool:
+        """Check if any matches in a round are currently live (in progress)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) as live_count
+            FROM matches 
+            WHERE league_night_id = ? AND round_number = ? AND status = 'live'
+        ''', (league_night_id, round_number))
+        row = cursor.fetchone()
+        return row['live_count'] > 0
+    
+    def get_queued_matches_in_current_round_only(self, league_night_id: int) -> list[dict]:
+        """Get queued matches ONLY from the current round, not future rounds."""
+        current_round = self.get_current_round(league_night_id)
+        if current_round == 0:
+            return []
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*,
+                   p1.name as team1_p1_name, p2.name as team1_p2_name,
+                   p3.name as team2_p1_name, p4.name as team2_p2_name
+            FROM matches m
+            LEFT JOIN players p1 ON m.team1_player1_id = p1.id
+            LEFT JOIN players p2 ON m.team1_player2_id = p2.id
+            LEFT JOIN players p3 ON m.team2_player1_id = p3.id
+            LEFT JOIN players p4 ON m.team2_player2_id = p4.id
+            WHERE m.league_night_id = ? AND m.round_number = ? AND m.status = 'queued'
+            ORDER BY m.queue_position
+        ''', (league_night_id, current_round))
+        return [dict(row) for row in cursor.fetchall()]
     
     # ============ Season-Aware Stats ============
     

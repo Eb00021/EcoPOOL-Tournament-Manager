@@ -84,7 +84,9 @@ class MatchGenerator:
                                table_count: int = 3,
                                avoid_repeats: bool = True) -> dict:
         """
-        Generate a full evening schedule ensuring each pair plays at least min_games_per_pair games.
+        Generate a full evening schedule organized into ROUNDS.
+        Each round contains matches that can be played simultaneously without any pair
+        playing at multiple tables at once.
         
         Args:
             pairs: List of (player1_id, player2_id) tuples representing fixed pairs
@@ -93,16 +95,18 @@ class MatchGenerator:
             avoid_repeats: Whether to avoid repeat matchups
             
         Returns:
-            Dict with schedule info including live games, queued games, etc.
+            Dict with schedule info including rounds, live games, queued games, etc.
         """
         if len(pairs) < 2:
             return {
                 'pairs': pairs,
                 'matches': [],
+                'rounds': [],
                 'live_matches': [],
                 'queued_matches': [],
                 'games_per_pair': {},
-                'total_matches': 0
+                'total_matches': 0,
+                'total_rounds': 0
             }
         
         # Get historical matchup counts if avoiding repeats
@@ -113,26 +117,27 @@ class MatchGenerator:
         
         # Count how many games each pair has been assigned
         games_per_pair = {i: 0 for i in range(len(pairs))}
-        selected_matchups = []
         tonight_matchups = {}  # Track tonight's matchups to avoid too many repeats
         
-        # First pass: Ensure minimum games per pair
-        # Keep selecting matchups until all pairs have at least min_games
+        # Generate rounds - each round ensures no pair plays twice
+        rounds = []
+        total_matchups_used = set()
+        
         while min(games_per_pair.values()) < min_games_per_pair:
-            # Find pairs that need more games
-            pairs_needing_games = [i for i, count in games_per_pair.items() 
-                                   if count < min_games_per_pair]
+            # Generate one round
+            round_matches = []
+            pairs_used_this_round = set()
             
-            # Find best matchup involving a pair that needs games
-            best_matchup = None
-            best_score = float('inf')
+            # Try to fill this round with as many matches as possible
+            # Limited by table_count and available pairs
+            max_matches_in_round = min(table_count, len(pairs) // 2)
             
+            # Find best matchups for this round
+            available_matchups = []
             for p1_idx, p2_idx in all_matchups:
-                # At least one pair should need more games
-                if p1_idx not in pairs_needing_games and p2_idx not in pairs_needing_games:
-                    continue
+                if (p1_idx, p2_idx) in total_matchups_used:
+                    continue  # Already scheduled tonight
                 
-                # Calculate repeat score
                 pair1 = pairs[p1_idx]
                 pair2 = pairs[p2_idx]
                 matchup_key = self._create_matchup_key(pair1, pair2)
@@ -140,71 +145,129 @@ class MatchGenerator:
                 historical_count = matchup_counts.get(matchup_key, 0)
                 tonight_count = tonight_matchups.get(matchup_key, 0)
                 
-                # Score: prefer matchups with fewer repeats
-                # Weight tonight's repeats more heavily
-                score = historical_count + (tonight_count * 10)
+                # Prioritize pairs that need more games
+                need_score = (min_games_per_pair - games_per_pair[p1_idx]) + \
+                            (min_games_per_pair - games_per_pair[p2_idx])
                 
-                if score < best_score:
-                    best_score = score
-                    best_matchup = (p1_idx, p2_idx)
+                # Score: lower is better (less repeats, more need)
+                score = historical_count + (tonight_count * 10) - need_score
+                
+                available_matchups.append((p1_idx, p2_idx, score))
             
-            if best_matchup is None:
-                # No valid matchup found, break
-                break
+            # Sort by score (best matchups first)
+            available_matchups.sort(key=lambda x: x[2])
             
-            p1_idx, p2_idx = best_matchup
-            selected_matchups.append(best_matchup)
-            games_per_pair[p1_idx] += 1
-            games_per_pair[p2_idx] += 1
+            # Select matches for this round, ensuring no pair conflicts
+            for p1_idx, p2_idx, score in available_matchups:
+                if len(round_matches) >= max_matches_in_round:
+                    break
+                
+                # Check if either pair is already in this round
+                if p1_idx in pairs_used_this_round or p2_idx in pairs_used_this_round:
+                    continue
+                
+                # Add match to round
+                round_matches.append((p1_idx, p2_idx))
+                pairs_used_this_round.add(p1_idx)
+                pairs_used_this_round.add(p2_idx)
+                total_matchups_used.add((p1_idx, p2_idx))
+                games_per_pair[p1_idx] += 1
+                games_per_pair[p2_idx] += 1
+                
+                # Track tonight's matchups
+                pair1 = pairs[p1_idx]
+                pair2 = pairs[p2_idx]
+                matchup_key = self._create_matchup_key(pair1, pair2)
+                tonight_matchups[matchup_key] = tonight_matchups.get(matchup_key, 0) + 1
             
-            # Track tonight's matchups
-            pair1 = pairs[p1_idx]
-            pair2 = pairs[p2_idx]
-            matchup_key = self._create_matchup_key(pair1, pair2)
-            tonight_matchups[matchup_key] = tonight_matchups.get(matchup_key, 0) + 1
+            if not round_matches:
+                # No more matches possible without repeats, allow repeats
+                # Find pairs that still need games and create matchups
+                pairs_needing_games = [i for i, count in games_per_pair.items() 
+                                       if count < min_games_per_pair]
+                
+                if len(pairs_needing_games) < 2:
+                    break  # Can't create more matches
+                
+                # Just pair up the pairs that need games
+                for i in range(0, len(pairs_needing_games) - 1, 2):
+                    if len(round_matches) >= max_matches_in_round:
+                        break
+                    
+                    p1_idx = pairs_needing_games[i]
+                    p2_idx = pairs_needing_games[i + 1]
+                    
+                    if p1_idx in pairs_used_this_round or p2_idx in pairs_used_this_round:
+                        continue
+                    
+                    round_matches.append((p1_idx, p2_idx))
+                    pairs_used_this_round.add(p1_idx)
+                    pairs_used_this_round.add(p2_idx)
+                    games_per_pair[p1_idx] += 1
+                    games_per_pair[p2_idx] += 1
+                
+                if not round_matches:
+                    break  # Still no matches possible
+            
+            rounds.append(round_matches)
         
-        # Shuffle matchups to randomize order
-        random.shuffle(selected_matchups)
-        
-        # Create match data with queue positions
+        # Create match data with round numbers
         matches = []
-        for i, (p1_idx, p2_idx) in enumerate(selected_matchups):
-            pair1 = pairs[p1_idx]
-            pair2 = pairs[p2_idx]
-            
-            matchup_key = self._create_matchup_key(pair1, pair2)
-            historical_count = matchup_counts.get(matchup_key, 0)
-            
-            matches.append({
-                'pair1_idx': p1_idx,
-                'pair2_idx': p2_idx,
-                'pair1': pair1,
-                'pair2': pair2,
-                'queue_position': i,
-                'is_repeat': historical_count > 0,
-                'repeat_count': historical_count
-            })
+        queue_position = 0
         
-        # Split into live and queued matches
-        live_matches = matches[:table_count]
-        queued_matches = matches[table_count:]
+        for round_num, round_matches in enumerate(rounds, start=1):
+            for p1_idx, p2_idx in round_matches:
+                pair1 = pairs[p1_idx]
+                pair2 = pairs[p2_idx]
+                
+                matchup_key = self._create_matchup_key(pair1, pair2)
+                historical_count = matchup_counts.get(matchup_key, 0)
+                
+                matches.append({
+                    'pair1_idx': p1_idx,
+                    'pair2_idx': p2_idx,
+                    'pair1': pair1,
+                    'pair2': pair2,
+                    'round_number': round_num,
+                    'queue_position': queue_position,
+                    'is_repeat': historical_count > 0,
+                    'repeat_count': historical_count,
+                    'status': 'queued',
+                    'table_number': None
+                })
+                queue_position += 1
         
-        # Assign table numbers to live matches
+        # Initial live matches are from round 1
+        round1_matches = [m for m in matches if m['round_number'] == 1]
+        live_matches = round1_matches[:table_count]
+        
+        # Assign table numbers to initial live matches
         for i, match in enumerate(live_matches):
             match['table_number'] = i + 1
             match['status'] = 'live'
         
-        for match in queued_matches:
-            match['status'] = 'queued'
-            match['table_number'] = None
+        # All other matches start as queued
+        queued_matches = [m for m in matches if m['status'] == 'queued']
+        
+        # Build round summaries
+        round_summaries = []
+        for round_num in range(1, len(rounds) + 1):
+            round_matches_list = [m for m in matches if m['round_number'] == round_num]
+            round_summaries.append({
+                'round_number': round_num,
+                'matches': round_matches_list,
+                'match_count': len(round_matches_list)
+            })
         
         return {
             'pairs': pairs,
             'matches': matches,
+            'rounds': round_summaries,
             'live_matches': live_matches,
             'queued_matches': queued_matches,
             'games_per_pair': {i: games_per_pair[i] for i in range(len(pairs))},
             'total_matches': len(matches),
+            'total_rounds': len(rounds),
             'table_count': table_count
         }
     
