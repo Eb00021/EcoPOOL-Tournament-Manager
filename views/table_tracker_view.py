@@ -137,9 +137,39 @@ class TableTrackerView(ctk.CTkFrame):
     
     def _setup_queue_section(self):
         """Setup the queue display section."""
+        # Round indicator
+        self.round_frame = ctk.CTkFrame(self.right_frame, fg_color="#2d4a70", corner_radius=10)
+        self.round_frame.pack(fill="x", padx=15, pady=(15, 5))
+        
+        round_inner = ctk.CTkFrame(self.round_frame, fg_color="transparent")
+        round_inner.pack(fill="x", padx=15, pady=8)
+        
+        ctk.CTkLabel(
+            round_inner,
+            text="Current Round:",
+            font=get_font(12),
+            text_color="#888888"
+        ).pack(side="left")
+        
+        self.round_label = ctk.CTkLabel(
+            round_inner,
+            text="1",
+            font=get_font(18, "bold"),
+            text_color="#64B5F6"
+        )
+        self.round_label.pack(side="left", padx=10)
+        
+        self.round_progress_label = ctk.CTkLabel(
+            round_inner,
+            text="",
+            font=get_font(11),
+            text_color="#888888"
+        )
+        self.round_progress_label.pack(side="right")
+        
         # Header
         header = ctk.CTkFrame(self.right_frame, fg_color="#3d3a1e", corner_radius=10)
-        header.pack(fill="x", padx=15, pady=15)
+        header.pack(fill="x", padx=15, pady=10)
         
         ctk.CTkLabel(
             header,
@@ -182,9 +212,33 @@ class TableTrackerView(ctk.CTkFrame):
         self.completed_count_label.pack(side="right", padx=15, pady=8)
         
         self.completed_scroll = ctk.CTkScrollableFrame(
-            self.right_frame, fg_color="transparent", height=150
+            self.right_frame, fg_color="transparent", height=120
         )
-        self.completed_scroll.pack(fill="x", padx=15, pady=(0, 15))
+        self.completed_scroll.pack(fill="x", padx=15, pady=(0, 10))
+        
+        # Buy-in tracking section
+        buyin_header = ctk.CTkFrame(self.right_frame, fg_color="#4a3d1e", corner_radius=10)
+        buyin_header.pack(fill="x", padx=15, pady=(5, 5))
+        
+        ctk.CTkLabel(
+            buyin_header,
+            text="💰 Buy-ins",
+            font=get_font(14, "bold"),
+            text_color="#ffd700"
+        ).pack(side="left", padx=15, pady=8)
+        
+        self.pot_total_label = ctk.CTkLabel(
+            buyin_header,
+            text="$0 / $0",
+            font=get_font(12, "bold"),
+            text_color="#4CAF50"
+        )
+        self.pot_total_label.pack(side="right", padx=15, pady=8)
+        
+        self.buyins_scroll = ctk.CTkScrollableFrame(
+            self.right_frame, fg_color="transparent", height=120
+        )
+        self.buyins_scroll.pack(fill="x", padx=15, pady=(0, 15))
     
     def _on_resize(self, event):
         """Handle window resize - debounced refresh for responsive layout."""
@@ -284,9 +338,10 @@ class TableTrackerView(ctk.CTkFrame):
         return card_width, card_height
     
     def refresh_tables(self):
-        """Refresh the entire view including tables and queue."""
+        """Refresh the entire view including tables, queue, and buy-ins."""
         self._refresh_tables_display()
         self._refresh_queue_display()
+        self._refresh_buyins_display()
     
     def _refresh_tables_display(self):
         """Refresh just the tables display."""
@@ -371,7 +426,7 @@ class TableTrackerView(ctk.CTkFrame):
                 self.table_widgets[i] = table_widget
     
     def _refresh_queue_display(self):
-        """Refresh the queue and completed games display."""
+        """Refresh the queue and completed games display with round awareness."""
         for widget in self.queue_scroll.winfo_children():
             widget.destroy()
         for widget in self.completed_scroll.winfo_children():
@@ -380,6 +435,8 @@ class TableTrackerView(ctk.CTkFrame):
         league_night = self.db.get_current_league_night()
         
         if not league_night:
+            self.round_label.configure(text="-")
+            self.round_progress_label.configure(text="")
             ctk.CTkLabel(
                 self.queue_scroll,
                 text="No active league night",
@@ -390,20 +447,101 @@ class TableTrackerView(ctk.CTkFrame):
             self.completed_count_label.configure(text="0 games")
             return
         
-        # Get queued matches
-        queued_matches = self.db.get_queued_matches(league_night['id'])
-        self.queue_count_label.configure(text=f"{len(queued_matches)} waiting")
+        # Get current round info
+        current_round = self.db.get_current_round(league_night['id'])
+        total_rounds = self.db.get_total_rounds(league_night['id'])
+        
+        if current_round > 0:
+            self.round_label.configure(text=str(current_round))
+            
+            # Get round progress
+            round_matches = self.db.get_matches_for_round(league_night['id'], current_round)
+            completed_in_round = sum(1 for m in round_matches if m['status'] == 'completed')
+            live_in_round = sum(1 for m in round_matches if m['status'] == 'live')
+            total_in_round = len(round_matches)
+            
+            self.round_progress_label.configure(
+                text=f"{completed_in_round}/{total_in_round} done | {total_rounds} total rounds"
+            )
+        else:
+            self.round_label.configure(text="-")
+            self.round_progress_label.configure(text="All games complete!")
+        
+        # Get queued matches ONLY from the current round (not future rounds)
+        queued_matches = self.db.get_queued_matches_in_current_round_only(league_night['id'])
+        all_queued = self.db.get_queued_matches(league_night['id'])
+        
+        # Show current round queue count vs total
+        if len(all_queued) > len(queued_matches):
+            self.queue_count_label.configure(
+                text=f"{len(queued_matches)} in round | {len(all_queued)} total"
+            )
+        else:
+            self.queue_count_label.configure(text=f"{len(queued_matches)} waiting")
+        
+        # Get pairs currently playing (anywhere, not just this round)
+        playing_pairs = self.db.get_all_pairs_currently_playing(league_night['id']) if current_round > 0 else set()
         
         if queued_matches:
             for i, match in enumerate(queued_matches):
-                self._create_queue_item(match, i + 1)
+                # Check if this match can start (pairs not playing AND in current round)
+                can_start, reason = self.db.can_start_match(match['id'])
+                self._create_queue_item(match, i + 1, can_start=can_start, block_reason=reason)
         else:
-            ctk.CTkLabel(
-                self.queue_scroll,
-                text="Queue is empty",
-                font=get_font(12),
-                text_color="#666666"
-            ).pack(pady=20)
+            # No queued matches in current round
+            # Check if round is complete (all games in this round finished)
+            round_complete = self.db.is_round_complete(league_night['id'], current_round) if current_round > 0 else False
+            round_in_progress = self.db.is_round_in_progress(league_night['id'], current_round) if current_round > 0 else False
+            
+            if current_round > 0 and round_in_progress:
+                # There are still live games in the current round - wait for them
+                ctk.CTkLabel(
+                    self.queue_scroll,
+                    text="All games in this round are on tables.",
+                    font=get_font(12),
+                    text_color="#ffd700"
+                ).pack(pady=(15, 5))
+                ctk.CTkLabel(
+                    self.queue_scroll,
+                    text="Finish current games to proceed.",
+                    font=get_font(11),
+                    text_color="#888888"
+                ).pack(pady=(0, 15))
+            elif round_complete and current_round < total_rounds:
+                # Round is complete and there are more rounds - show Next Round button
+                ctk.CTkLabel(
+                    self.queue_scroll,
+                    text=f"Round {current_round} Complete!",
+                    font=get_font(14, "bold"),
+                    text_color="#4CAF50"
+                ).pack(pady=(15, 10))
+                
+                ctk.CTkButton(
+                    self.queue_scroll,
+                    text=f"Start Round {current_round + 1}",
+                    font=get_font(14, "bold"),
+                    height=45,
+                    fg_color="#2d7a3e",
+                    hover_color="#1a5f2a",
+                    command=lambda: self._start_next_round(league_night['id'], current_round + 1)
+                ).pack(fill="x", padx=10, pady=10)
+                
+                # Show upcoming matches preview
+                next_round_matches = self.db.get_matches_for_round(league_night['id'], current_round + 1)
+                if next_round_matches:
+                    ctk.CTkLabel(
+                        self.queue_scroll,
+                        text=f"Round {current_round + 1}: {len(next_round_matches)} games",
+                        font=get_font(11),
+                        text_color="#888888"
+                    ).pack(pady=(5, 10))
+            else:
+                ctk.CTkLabel(
+                    self.queue_scroll,
+                    text="Queue is empty",
+                    font=get_font(12),
+                    text_color="#666666"
+                ).pack(pady=20)
         
         # Get completed matches
         completed_matches = self.db.get_matches_by_status(league_night['id'], 'completed')
@@ -420,21 +558,131 @@ class TableTrackerView(ctk.CTkFrame):
                 text_color="#666666"
             ).pack(pady=10)
     
-    def _create_queue_item(self, match: dict, position: int):
-        """Create a queue item display."""
-        frame = ctk.CTkFrame(self.queue_scroll, fg_color="#3d3a1e", corner_radius=8)
+    def _start_next_round(self, league_night_id: int, next_round: int):
+        """Start the next round by automatically filling all empty tables with games."""
+        # Auto-fill all empty tables with games from the new round
+        games_started = self._auto_fill_empty_tables(league_night_id)
+        
+        if games_started > 0:
+            messagebox.showinfo(
+                "Round Started",
+                f"Round {next_round} has begun!\n\n"
+                f"Automatically started {games_started} game(s) on empty tables."
+            )
+        else:
+            messagebox.showinfo(
+                "Round Started",
+                f"Round {next_round} has begun!\n\n"
+                f"No empty tables available to start games."
+            )
+        
+        self.refresh_tables()
+    
+    def _auto_fill_empty_tables(self, league_night_id: int) -> int:
+        """Automatically fill all empty tables with available games from the current round.
+        Returns the number of games started."""
+        games_started = 0
+        
+        # Get currently occupied tables
+        live_matches = self.db.get_live_matches(league_night_id)
+        occupied_tables = {match['table_number'] for match in live_matches}
+        
+        # Find empty tables
+        empty_tables = [t for t in range(1, self.num_tables + 1) if t not in occupied_tables]
+        
+        if not empty_tables:
+            return 0
+        
+        # Fill each empty table with the next available game
+        for table_num in empty_tables:
+            next_match = self.db.get_next_available_match(league_night_id)
+            
+            if next_match:
+                can_start, reason = self.db.can_start_match(next_match['id'])
+                if can_start:
+                    self.db.start_match(next_match['id'], table_num)
+                    games_started += 1
+                else:
+                    # No more available matches (pairs busy or waiting for round)
+                    break
+            else:
+                # No more queued matches in current round
+                break
+        
+        return games_started
+    
+    def _check_and_auto_fill_tables(self):
+        """Check if round is complete and no players are busy, then auto-fill tables.
+        Called after a match is completed to potentially start the next round automatically."""
+        league_night = self.db.get_current_league_night()
+        if not league_night:
+            return
+        
+        current_round = self.db.get_current_round(league_night['id'])
+        if current_round == 0:
+            return  # All games complete
+        
+        # Check if there are any live matches (players busy)
+        live_matches = self.db.get_live_matches(league_night['id'])
+        
+        # If no live matches and no queued matches in current round, 
+        # but there are more rounds, auto-start the next round
+        if not live_matches:
+            queued_in_round = self.db.get_queued_matches_in_current_round_only(league_night['id'])
+            
+            if not queued_in_round:
+                # Current round has no queued or live matches - round is complete
+                total_rounds = self.db.get_total_rounds(league_night['id'])
+                
+                # The get_current_round will return the next round automatically
+                # since all matches in the current round are complete
+                new_round = self.db.get_current_round(league_night['id'])
+                
+                if new_round > 0 and new_round <= total_rounds:
+                    # There's a new round available - auto-fill tables
+                    games_started = self._auto_fill_empty_tables(league_night['id'])
+                    
+                    if games_started > 0:
+                        messagebox.showinfo(
+                            "Round Auto-Started",
+                            f"Round {new_round} has automatically begun!\n\n"
+                            f"Started {games_started} game(s) on empty tables."
+                        )
+            else:
+                # There are queued matches in the current round - try to fill empty tables
+                games_started = self._auto_fill_empty_tables(league_night['id'])
+                # Don't show a message for just filling within the same round
+
+    def _create_queue_item(self, match: dict, position: int, can_start: bool = True, block_reason: str = ""):
+        """Create a queue item display with availability indicator."""
+        # Color based on availability
+        if can_start:
+            bg_color = "#3d3a1e"  # Normal yellow tint
+            text_color = "#dddddd"
+        else:
+            bg_color = "#3a2020"  # Red tint - blocked
+            text_color = "#999999"
+        
+        frame = ctk.CTkFrame(self.queue_scroll, fg_color=bg_color, corner_radius=8)
         frame.pack(fill="x", pady=2)
         
         inner = ctk.CTkFrame(frame, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=8)
         
-        # Position
+        # Position and status indicator
+        if can_start:
+            pos_text = f"#{position}"
+            pos_color = "#ffd700"
+        else:
+            pos_text = f"#{position} ⏳"
+            pos_color = "#ff6b6b"
+        
         ctk.CTkLabel(
             inner,
-            text=f"#{position}",
+            text=pos_text,
             font=get_font(12, "bold"),
-            text_color="#ffd700",
-            width=30
+            text_color=pos_color,
+            width=40
         ).pack(side="left")
         
         # Teams
@@ -450,8 +698,25 @@ class TableTrackerView(ctk.CTkFrame):
             inner,
             text=f"{team1} vs {team2}",
             font=get_font(11),
-            text_color="#dddddd"
+            text_color=text_color
         ).pack(side="left", padx=(5, 0))
+        
+        # Show block reason if applicable (pair playing at another table)
+        if not can_start and block_reason:
+            # Simplify the message for display
+            if "playing" in block_reason.lower():
+                display_reason = "Pair currently playing"
+            elif "Round" in block_reason:
+                display_reason = "Waiting for round"
+            else:
+                display_reason = block_reason
+            
+            ctk.CTkLabel(
+                frame,
+                text=f"  {display_reason}",
+                font=get_font(9),
+                text_color="#ff6b6b"
+            ).pack(anchor="w", padx=45, pady=(0, 5))
     
     def _create_completed_item(self, match: dict):
         """Create a completed game item display."""
@@ -478,6 +743,107 @@ class TableTrackerView(ctk.CTkFrame):
             font=get_font(10),
             text_color="#90EE90"
         ).pack(side="left")
+    
+    def _refresh_buyins_display(self):
+        """Refresh the buy-ins tracking display."""
+        for widget in self.buyins_scroll.winfo_children():
+            widget.destroy()
+        
+        league_night = self.db.get_current_league_night()
+        
+        if not league_night:
+            self.pot_total_label.configure(text="$0 / $0")
+            ctk.CTkLabel(
+                self.buyins_scroll,
+                text="No active league night",
+                font=get_font(11),
+                text_color="#666666"
+            ).pack(pady=10)
+            return
+        
+        # Get buy-ins for this league night
+        buyins = self.db.get_buyins_for_night(league_night['id'])
+        total_expected, total_paid = self.db.get_total_pot(league_night['id'])
+        
+        self.pot_total_label.configure(
+            text=f"${total_paid:.0f} / ${total_expected:.0f}",
+            text_color="#4CAF50" if total_paid >= total_expected else "#ffd700"
+        )
+        
+        if not buyins:
+            ctk.CTkLabel(
+                self.buyins_scroll,
+                text="No buy-ins recorded",
+                font=get_font(11),
+                text_color="#666666"
+            ).pack(pady=10)
+            return
+        
+        # Sort by paid status (unpaid first)
+        buyins_sorted = sorted(buyins, key=lambda x: (x['paid'], x['player_name']))
+        
+        for buyin in buyins_sorted:
+            self._create_buyin_item(buyin, league_night['id'])
+    
+    def _create_buyin_item(self, buyin: dict, league_night_id: int):
+        """Create a buy-in item with toggle checkbox."""
+        is_paid = buyin['paid']
+        bg_color = "#1e4a1e" if is_paid else "#4a3020"
+        
+        frame = ctk.CTkFrame(self.buyins_scroll, fg_color=bg_color, corner_radius=6)
+        frame.pack(fill="x", pady=1)
+        
+        inner = ctk.CTkFrame(frame, fg_color="transparent")
+        inner.pack(fill="x", padx=8, pady=4)
+        
+        # Checkbox to toggle paid status
+        var = ctk.BooleanVar(value=is_paid)
+        
+        cb = ctk.CTkCheckBox(
+            inner,
+            text="",
+            variable=var,
+            width=20,
+            height=20,
+            fg_color="#4CAF50",
+            hover_color="#388E3C",
+            command=lambda pid=buyin['player_id'], v=var: self._toggle_buyin_paid(league_night_id, pid, v.get())
+        )
+        cb.pack(side="left", padx=(0, 5))
+        
+        # Player name
+        name_color = "#90EE90" if is_paid else "#ffcc80"
+        ctk.CTkLabel(
+            inner,
+            text=buyin['player_name'],
+            font=get_font(11),
+            text_color=name_color
+        ).pack(side="left")
+        
+        # Amount
+        amount_text = f"${buyin['amount']:.0f}"
+        ctk.CTkLabel(
+            inner,
+            text=amount_text,
+            font=get_font(10),
+            text_color="#888888"
+        ).pack(side="right", padx=5)
+        
+        # Paid/Unpaid indicator
+        status_text = "✓ Paid" if is_paid else "Unpaid"
+        status_color = "#4CAF50" if is_paid else "#ff6b6b"
+        ctk.CTkLabel(
+            inner,
+            text=status_text,
+            font=get_font(9),
+            text_color=status_color
+        ).pack(side="right", padx=5)
+    
+    def _toggle_buyin_paid(self, league_night_id: int, player_id: int, paid: bool):
+        """Toggle the paid status of a buy-in."""
+        self.db.mark_buyin_paid(league_night_id, player_id, paid=paid)
+        # Refresh just the buyins display to update totals
+        self._refresh_buyins_display()
     
     def create_table_widget(self, parent, table_num: int, match=None, card_width=250, card_height=200):
         """Create a table widget display."""
@@ -604,11 +970,15 @@ class TableTrackerView(ctk.CTkFrame):
                 text_color="#666666"
             ).pack(pady=(5, 2))
             
-            # Start from queue button if queue has items
+            # Start from queue button - only if there's an available match in the current round
             league_night = self.db.get_current_league_night()
             if league_night:
-                next_match = self.db.get_next_queued_match(league_night['id'])
+                # Check if there's an available match (respects round and pair availability)
+                next_match = self.db.get_next_available_match(league_night['id'])
+                current_round = self.db.get_current_round(league_night['id'])
+                
                 if next_match:
+                    # There's a game available to start
                     ctk.CTkButton(
                         empty_frame,
                         text="Start Next Game",
@@ -619,6 +989,27 @@ class TableTrackerView(ctk.CTkFrame):
                         text_color="#000000",
                         command=lambda t=table_num: self.start_next_on_table(t)
                     ).pack(pady=5)
+                elif current_round > 0:
+                    # No available matches - check why
+                    round_complete = self.db.is_round_complete(league_night['id'], current_round)
+                    total_rounds = self.db.get_total_rounds(league_night['id'])
+                    
+                    if round_complete and current_round < total_rounds:
+                        # Round complete, waiting for Next Round button
+                        ctk.CTkLabel(
+                            empty_frame,
+                            text="Round complete",
+                            font=get_font(10),
+                            text_color="#4CAF50"
+                        ).pack(pady=2)
+                    elif not round_complete:
+                        # Pairs are busy at other tables
+                        ctk.CTkLabel(
+                            empty_frame,
+                            text="Pairs busy",
+                            font=get_font(10),
+                            text_color="#ffd700"
+                        ).pack(pady=2)
         
         # Bind click events to all children for active matches
         if is_clickable and match and self.on_match_click:
@@ -636,35 +1027,186 @@ class TableTrackerView(ctk.CTkFrame):
         return outer_frame
     
     def complete_match_on_table(self, match: dict, table_num: int):
-        """Complete a match and optionally start the next queued game."""
+        """Complete a match and automatically fill empty tables with new games.
+        Handles round transitions - auto-starts next round when all tables are free."""
         # Mark match as completed
         self.db.complete_match_with_status(match['id'])
         
-        # Check if there's a next game in queue
         league_night = self.db.get_current_league_night()
-        if league_night:
-            next_match = self.db.get_next_queued_match(league_night['id'])
-            if next_match:
-                # Ask if they want to start the next game
-                result = messagebox.askyesno(
+        if not league_night:
+            self.refresh_tables()
+            return
+        
+        # Check if the round just completed
+        match_round = match.get('round_number', 1)
+        round_complete = self.db.is_round_complete(league_night['id'], match_round)
+        total_rounds = self.db.get_total_rounds(league_night['id'])
+        
+        # Check if there are still live matches (other players still playing)
+        live_matches = self.db.get_live_matches(league_night['id'])
+        all_tables_free = len(live_matches) == 0
+        
+        if round_complete and match_round >= total_rounds:
+            # All rounds complete
+            messagebox.showinfo(
+                "All Games Complete!",
+                f"Congratulations! All games for tonight are complete.\n\n"
+                f"Check the leaderboard to see the results!"
+            )
+            self.refresh_tables()
+            return
+        
+        if round_complete and match_round < total_rounds and all_tables_free:
+            # Round completed AND no players are busy - auto-start next round
+            games_started = self._auto_fill_empty_tables(league_night['id'])
+            
+            if games_started > 0:
+                messagebox.showinfo(
+                    "Round Auto-Started",
+                    f"Round {match_round} complete!\n\n"
+                    f"Round {match_round + 1} has automatically begun.\n"
+                    f"Started {games_started} game(s) on empty tables."
+                )
+            else:
+                messagebox.showinfo(
+                    "Round Complete!",
+                    f"Round {match_round} is complete!\n\n"
+                    f"Use the 'Start Next Game' button to begin Round {match_round + 1}."
+                )
+            self.refresh_tables()
+            return
+        
+        if round_complete and match_round < total_rounds:
+            # Round completed but some players are still playing
+            # Just show a message, next round will auto-start when all tables are free
+            messagebox.showinfo(
+                "Game Completed",
+                f"Match completed on Table {table_num}!\n\n"
+                f"Round {match_round} is almost complete.\n"
+                f"Round {match_round + 1} will auto-start when all current games finish."
+            )
+            self.refresh_tables()
+            return
+        
+        # Round is not complete - try to auto-fill this table with next available match
+        next_match = self.db.get_next_available_match(league_night['id'])
+        
+        if next_match:
+            # Verify it's from the same round
+            next_match_round = next_match.get('round_number', 1)
+            if next_match_round != match_round:
+                # Next match is from a future round - wait for round to complete
+                messagebox.showinfo(
                     "Game Completed",
                     f"Match completed on Table {table_num}!\n\n"
-                    f"Start next game from queue on this table?"
+                    f"Waiting for other games in Round {match_round} to finish."
                 )
-                if result:
+            else:
+                # Automatically start the next game on this table
+                can_start, reason = self.db.can_start_match(next_match['id'])
+                if can_start:
                     self.db.start_match(next_match['id'], table_num)
+                    # Format names for display
+                    team1 = self.format_player_name(next_match['team1_p1_name'])
+                    team2 = self.format_player_name(next_match['team2_p1_name'])
+                    messagebox.showinfo(
+                        "Next Game Started",
+                        f"Match completed on Table {table_num}!\n\n"
+                        f"Automatically starting next game:\n"
+                        f"{team1} vs {team2}"
+                    )
+                else:
+                    messagebox.showinfo(
+                        "Game Completed",
+                        f"Match completed on Table {table_num}!\n\n"
+                        f"Next game waiting for other matches to finish:\n{reason}"
+                    )
+        else:
+            # No more queued matches in this round
+            round_in_progress = self.db.is_round_in_progress(league_night['id'], match_round)
+            if round_in_progress:
+                messagebox.showinfo(
+                    "Game Completed",
+                    f"Match completed on Table {table_num}!\n\n"
+                    f"All remaining games in Round {match_round} have pairs\n"
+                    f"that are playing at other tables."
+                )
+            else:
+                # Shouldn't get here - handled above, but just in case
+                if match_round < total_rounds:
+                    messagebox.showinfo(
+                        "Round Complete!",
+                        f"Round {match_round} is complete!"
+                    )
+                else:
+                    messagebox.showinfo(
+                        "All Games Complete!",
+                        f"All games for tonight are complete!"
+                    )
         
         self.refresh_tables()
     
     def start_next_on_table(self, table_num: int):
-        """Start the next queued game on a specific table."""
+        """Start the next available queued game on a specific table.
+        Respects round system - only starts games from the current round where both pairs are available."""
         league_night = self.db.get_current_league_night()
-        if league_night:
-            next_match = self.db.advance_queue(league_night['id'], table_num)
-            if next_match:
+        if not league_night:
+            messagebox.showinfo("No League Night", "No active league night found.")
+            return
+        
+        current_round = self.db.get_current_round(league_night['id'])
+        total_rounds = self.db.get_total_rounds(league_night['id'])
+        
+        if current_round == 0:
+            messagebox.showinfo("All Complete", "All games have been completed!")
+            return
+        
+        # Get next available match (only from current round, respects pair availability)
+        next_match = self.db.get_next_available_match(league_night['id'])
+        
+        if next_match:
+            # Double-check the match can start (includes round check and pair availability)
+            can_start, reason = self.db.can_start_match(next_match['id'])
+            if can_start:
+                self.db.start_match(next_match['id'], table_num)
                 self.refresh_tables()
             else:
-                messagebox.showinfo("Queue Empty", "No more games in the queue.")
+                messagebox.showwarning(
+                    "Cannot Start Game",
+                    f"This game cannot start yet:\n{reason}\n\n"
+                    f"Wait for the current game(s) to finish."
+                )
+        else:
+            # No available matches in current round
+            # Check if the round is still in progress (live games)
+            round_in_progress = self.db.is_round_in_progress(league_night['id'], current_round)
+            round_complete = self.db.is_round_complete(league_night['id'], current_round)
+            
+            if round_in_progress:
+                # All queued games in this round have pairs that are currently playing
+                messagebox.showinfo(
+                    "Pairs Busy",
+                    f"All remaining games in Round {current_round} have pairs\n"
+                    f"that are currently playing at other tables.\n\n"
+                    f"Wait for a game to finish."
+                )
+            elif round_complete and current_round < total_rounds:
+                # Current round is complete, show message to use Next Round button
+                messagebox.showinfo(
+                    "Round Complete",
+                    f"Round {current_round} is complete!\n\n"
+                    f"Click the 'Start Round {current_round + 1}' button\n"
+                    f"in the queue section to begin the next round."
+                )
+                self.refresh_tables()
+            elif round_complete and current_round >= total_rounds:
+                messagebox.showinfo(
+                    "All Complete", 
+                    "All games have been completed!\n\n"
+                    "Check the leaderboard to see the results."
+                )
+            else:
+                messagebox.showinfo("Queue Empty", "No more games available in the current round.")
     
     def destroy(self):
         """Clean up timers on destroy."""

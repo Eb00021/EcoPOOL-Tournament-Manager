@@ -13,10 +13,11 @@ from fonts import get_font
 
 
 class PlayersView(ctk.CTkFrame):
-    def __init__(self, parent, db: DatabaseManager):
+    def __init__(self, parent, db: DatabaseManager, on_player_change=None):
         super().__init__(parent, fg_color="transparent")
         self.db = db
         self.exporter = Exporter(db)
+        self.on_player_change = on_player_change  # Callback for when player data changes
         
         self.setup_ui()
         self.load_players()
@@ -397,12 +398,18 @@ class PlayersView(ctk.CTkFrame):
             if search_text in player.name.lower() or search_text in (player.email or "").lower():
                 self.create_player_row(player)
     
+    def _notify_change(self):
+        """Notify that player data has changed (for web server updates)."""
+        if self.on_player_change:
+            self.on_player_change()
+    
     def show_picture_browser(self, player):
         """Show the profile picture browser for a player."""
         def on_select(picture_path):
             self.db.update_player_picture(player.id, picture_path)
             self.load_players()
             flash_widget(self.players_container, "#4CAF50", times=2)
+            self._notify_change()  # Notify web server of profile picture change
         
         ProfilePictureBrowser(
             self,
@@ -492,6 +499,7 @@ class PlayersView(ctk.CTkFrame):
                 self.load_players()
                 # Flash animation
                 flash_widget(self.players_container, "#4CAF50", times=2)
+                self._notify_change()  # Notify web server
             except Exception as e:
                 if "UNIQUE" in str(e):
                     messagebox.showerror("Error", "A player with this name already exists")
@@ -600,6 +608,7 @@ class PlayersView(ctk.CTkFrame):
             # Show results
             if added > 0:
                 flash_widget(self.players_container, "#4CAF50", times=2)
+                self._notify_change()  # Notify web server
             
             result_msg = f"Successfully added {added} player{'s' if added != 1 else ''}!"
             if skipped:
@@ -710,6 +719,7 @@ class PlayersView(ctk.CTkFrame):
                 )
                 dialog.destroy()
                 self.load_players()
+                self._notify_change()  # Notify web server
             except Exception as e:
                 messagebox.showerror("Error", str(e))
         
@@ -732,6 +742,7 @@ class PlayersView(ctk.CTkFrame):
         if messagebox.askyesno("Confirm Delete", f"Are you sure you want to remove {player.name}?"):
             self.db.delete_player(player.id)
             self.load_players()
+            self._notify_change()  # Notify web server
     
     def clear_all_players(self):
         """Clear all players from the database."""
@@ -756,6 +767,7 @@ class PlayersView(ctk.CTkFrame):
             ):
                 self.db.clear_all_players()
                 self.load_players()
+                self._notify_change()  # Notify web server
                 messagebox.showinfo("Success", "All players and match data have been removed.")
     
     def import_players(self):
@@ -770,6 +782,7 @@ class PlayersView(ctk.CTkFrame):
             if success:
                 self.load_players()
                 flash_widget(self.players_container, "#4CAF50", times=2)
+                self._notify_change()  # Notify web server
                 messagebox.showinfo("Success", message)
             else:
                 messagebox.showerror("Error", message)

@@ -227,10 +227,11 @@ class PoolTableCanvas(ctk.CTkFrame):
 class ScorecardView(ctk.CTkFrame):
     """Main scorecard view with match selection and game scoring."""
     
-    def __init__(self, parent, db: DatabaseManager):
+    def __init__(self, parent, db: DatabaseManager, on_score_change=None):
         super().__init__(parent, fg_color="transparent")
         self.db = db
         self.exporter = Exporter(db)
+        self.on_score_change = on_score_change  # Callback for live score updates
         
         self.current_match = None
         self.current_game = None
@@ -328,16 +329,18 @@ class ScorecardView(ctk.CTkFrame):
                 team2 += f" & {match['team2_p2_name']}"
             
             match_type = "🏆" if match['is_finals'] else "🎱"
+            table_num = match.get('table_number', 0) or 0
             
             if match['is_complete']:
                 status = "✅"
-                label = f"{status} {match_type} {team1} vs {team2} (Table {match['table_number']})"
+                label = f"{status} {match_type} {team1} vs {team2} (Table {table_num})"
                 completed_matches.append((label, match['id']))
-            else:
-                # Live/in-progress matches get special highlighting
+            elif table_num > 0:
+                # Live/in-progress matches on a real table get live indicator
                 status = "🔴 LIVE"
-                label = f"{status} {match_type} {team1} vs {team2} (Table {match['table_number']})"
+                label = f"{status} {match_type} {team1} vs {team2} (Table {table_num})"
                 live_matches.append((label, match['id']))
+            # Skip queued matches (table_num == 0) - don't show them in scorecard
         
         # Add live matches first (they're more important)
         if live_matches:
@@ -346,8 +349,9 @@ class ScorecardView(ctk.CTkFrame):
             for label, match_id in live_matches:
                 match_options.append(label)
                 self.match_ids[label] = match_id
-            match_options.append("--- COMPLETED ---")
-            self.match_ids["--- COMPLETED ---"] = None
+            if completed_matches:
+                match_options.append("--- COMPLETED ---")
+                self.match_ids["--- COMPLETED ---"] = None
         
         # Then add completed matches
         for label, match_id in completed_matches:
@@ -1281,6 +1285,10 @@ class ScorecardView(ctk.CTkFrame):
             golden,
             early
         )
+        
+        # Notify live scores server of update
+        if self.on_score_change:
+            self.on_score_change()
     
     def golden_break(self):
         """Handle golden break - 17 points to breaking team."""
@@ -1357,6 +1365,10 @@ class ScorecardView(ctk.CTkFrame):
         
         self.update_match_status()
         
+        # Notify live scores server of update
+        if self.on_score_change:
+            self.on_score_change()
+        
         # Force UI to update before showing messagebox
         self.update_idletasks()
         
@@ -1414,8 +1426,8 @@ class ScorecardView(ctk.CTkFrame):
         if not league_night:
             return
         
-        # Check for next queued match
-        next_match = self.db.get_next_queued_match(league_night['id'])
+        # Check for next queued match (respecting round and pair availability)
+        next_match = self.db.get_next_available_match(league_night['id'])
         if next_match:
             # Get team names for display
             team1 = next_match['team1_p1_name'] or "Unknown"
@@ -1439,6 +1451,10 @@ class ScorecardView(ctk.CTkFrame):
                 
                 # Refresh the match list
                 self.load_matches()
+                
+                # Automatically switch to the new match
+                new_match_id = next_match['id']
+                self.select_match_by_id(new_match_id)
     
     def export_scorecard(self):
         """Export current match scorecard to PDF."""

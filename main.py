@@ -19,6 +19,14 @@ import customtkinter as ctk
 from tkinter import messagebox, filedialog
 import sys
 import os
+import io
+
+try:
+    import qrcode
+    from PIL import Image
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +43,7 @@ from views.history_view import HistoryView
 from views.table_tracker_view import TableTrackerView
 from views.bracket_view import BracketView
 from animations import AnimatedCard, AnimatedButton, show_celebration
+from web_server import LiveScoreServer
 
 
 class EcoPoolApp(ctk.CTk):
@@ -58,6 +67,9 @@ class EcoPoolApp(ctk.CTk):
         # Initialize database
         self.db = DatabaseManager()
         self.exporter = Exporter(self.db)
+        
+        # Initialize web server for live scores
+        self.web_server = LiveScoreServer(self.db)
         
         # Track current view
         self.current_view = None
@@ -283,6 +295,58 @@ class EcoPoolApp(ctk.CTk):
             command=self.import_players
         ).pack(side="right", padx=(2, 0))
         
+        # Separator
+        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
+        
+        # Live Scores Web Server section
+        web_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
+        web_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(
+            web_frame,
+            text="📱 Live Scores Server",
+            font=get_font(13, "bold"),
+            text_color="#888888"
+        ).pack(pady=(8, 5))
+        
+        ctk.CTkLabel(
+            web_frame,
+            text="Share scores to mobile devices",
+            font=get_font(10),
+            text_color="#666666"
+        ).pack(pady=(0, 5))
+        
+        self.web_server_btn = ctk.CTkButton(
+            web_frame,
+            text="▶ Start Server",
+            font=get_font(11),
+            height=30,
+            fg_color="#2d7a3e",
+            hover_color="#1a5f2a",
+            command=self.toggle_web_server
+        )
+        self.web_server_btn.pack(fill="x", padx=8, pady=2)
+        
+        self.qr_code_btn = ctk.CTkButton(
+            web_frame,
+            text="📱 Show QR Code",
+            font=get_font(11),
+            height=30,
+            fg_color="#3d5a80",
+            hover_color="#2d4a70",
+            command=self.show_qr_code,
+            state="disabled"
+        )
+        self.qr_code_btn.pack(fill="x", padx=8, pady=2)
+        
+        self.web_server_status = ctk.CTkLabel(
+            web_frame,
+            text="Server stopped",
+            font=get_font(10),
+            text_color="#666666"
+        )
+        self.web_server_status.pack(pady=(2, 8))
+        
         # Version info at bottom (fixed)
         ctk.CTkLabel(
             self.sidebar,
@@ -464,7 +528,7 @@ class EcoPoolApp(ctk.CTk):
         if view_name == "home":
             self.show_home()
         elif view_name == "players":
-            view = PlayersView(self.content, self.db)
+            view = PlayersView(self.content, self.db, on_player_change=self.notify_scores_updated)
             view.pack(fill="both", expand=True)
         elif view_name == "generator":
             view = MatchGeneratorView(
@@ -476,7 +540,7 @@ class EcoPoolApp(ctk.CTk):
             )
             view.pack(fill="both", expand=True)
         elif view_name == "scorecard":
-            view = ScorecardView(self.content, self.db)
+            view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated)
             view.pack(fill="both", expand=True)
         elif view_name == "bracket":
             view = BracketView(self.content, self.db)
@@ -493,26 +557,39 @@ class EcoPoolApp(ctk.CTk):
             view.pack(fill="both", expand=True)
     
     def new_pool_night(self):
-        """Start a new pool night - clears all matches but keeps players."""
+        """Start a new pool night - clears incomplete matches but keeps completed games for leaderboard."""
         if messagebox.askyesno(
             "New Pool Night",
-            "This will DELETE all current matches and games.\n\n"
-            "Players will be kept.\n\n"
+            "This will clear the current league night setup.\n\n"
+            "COMPLETED games will be KEPT for the leaderboard.\n"
+            "Only incomplete matches will be removed.\n\n"
             "Do you want to save the current match history first?",
-            icon="warning"
+            icon="question"
         ):
             # Offer to save first
             self.save_matches()
         
         if messagebox.askyesno(
             "Confirm New Pool Night",
-            "Are you sure you want to clear all matches?\n\nThis cannot be undone.",
-            icon="warning"
+            "Start a new pool night?\n\n"
+            "• Incomplete matches will be cleared\n"
+            "• Completed games stay in leaderboard\n"
+            "• Players are kept",
+            icon="question"
         ):
-            self.db.clear_matches()
+            # Keep completed matches for leaderboard persistence
+            self.db.clear_matches(keep_completed=True)
+            # Clear pending pairings
+            self.pending_pairings = None
+            self.pending_pairings_multi_round = False
             self.update_quick_stats()
             self.show_home()
-            messagebox.showinfo("Success", "New pool night started!\nAll matches have been cleared.")
+            messagebox.showinfo(
+                "Success", 
+                "New pool night started!\n\n"
+                "Completed games remain in the leaderboard.\n"
+                "Go to Match Generator to set up tonight's games."
+            )
     
     def save_matches(self):
         """Save match history to JSON file."""
@@ -587,6 +664,8 @@ class EcoPoolApp(ctk.CTk):
         self.pending_pairings = None
         self.pending_pairings_multi_round = False
         self.update_quick_stats()
+        # Notify web server of new matches
+        self.notify_scores_updated()
     
     def go_to_scorecard(self, match_id: int):
         """Navigate to scorecard with a specific match selected."""
@@ -594,14 +673,158 @@ class EcoPoolApp(ctk.CTk):
         self.set_active_nav("scorecard")
         self.update_quick_stats()
         
-        view = ScorecardView(self.content, self.db)
+        view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated)
         view.pack(fill="both", expand=True)
         
         # Select the match in the scorecard
         view.select_match_by_id(match_id)
     
+    def toggle_web_server(self):
+        """Start or stop the live scores web server."""
+        if self.web_server.is_running():
+            self.web_server.stop()
+            self.web_server_btn.configure(
+                text="▶ Start Server",
+                fg_color="#2d7a3e",
+                hover_color="#1a5f2a"
+            )
+            self.qr_code_btn.configure(state="disabled")
+            self.web_server_status.configure(
+                text="Server stopped",
+                text_color="#666666"
+            )
+            self._current_server_url = None
+        else:
+            success, result = self.web_server.start()
+            if success:
+                self._current_server_url = result
+                self.web_server_btn.configure(
+                    text="⏹ Stop Server",
+                    fg_color="#c44536",
+                    hover_color="#a43526"
+                )
+                self.qr_code_btn.configure(state="normal")
+                self.web_server_status.configure(
+                    text=f"📱 {result}",
+                    text_color="#4CAF50"
+                )
+                # Show QR code popup automatically
+                self.show_qr_code()
+            else:
+                messagebox.showerror("Server Error", f"Failed to start server:\n{result}")
+    
+    def show_qr_code(self):
+        """Show a QR code popup for the server URL."""
+        if not hasattr(self, '_current_server_url') or not self._current_server_url:
+            messagebox.showwarning("Server Not Running", "Start the server first to generate a QR code.")
+            return
+        
+        url = self._current_server_url
+        
+        # Check if QR code library is available
+        if not QR_AVAILABLE:
+            messagebox.showinfo(
+                "QR Code Not Available",
+                f"Install qrcode library to enable QR codes:\n\n"
+                f"pip install qrcode[pil]\n\n"
+                f"For now, manually enter this URL:\n{url}"
+            )
+            return
+        
+        # Create QR code
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        
+        # Create image (CTkImage will handle resizing)
+        qr_image = qr.make_image(fill_color="black", back_color="white").convert('RGB')
+        
+        # Create popup window
+        popup = ctk.CTkToplevel(self)
+        popup.title("Scan to Open Live Scores")
+        popup.geometry("380x520")
+        popup.resizable(False, False)
+        popup.transient(self)
+        popup.grab_set()
+        
+        # Center the popup
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - 190
+        y = self.winfo_y() + (self.winfo_height() // 2) - 260
+        popup.geometry(f"+{x}+{y}")
+        
+        # Header
+        ctk.CTkLabel(
+            popup,
+            text="📱 Scan QR Code",
+            font=get_font(22, "bold"),
+            text_color="#4CAF50"
+        ).pack(pady=(20, 5))
+        
+        ctk.CTkLabel(
+            popup,
+            text="Open your phone camera and point at the code",
+            font=get_font(12),
+            text_color="#888888"
+        ).pack(pady=(0, 15))
+        
+        # QR Code frame
+        qr_frame = ctk.CTkFrame(popup, fg_color="white", corner_radius=10)
+        qr_frame.pack(padx=30, pady=10)
+        
+        # Convert PIL image to CTkImage for proper HighDPI support
+        ctk_image = ctk.CTkImage(light_image=qr_image, dark_image=qr_image, size=(280, 280))
+        
+        qr_label = ctk.CTkLabel(qr_frame, image=ctk_image, text="")
+        qr_label.image = ctk_image  # Keep reference
+        qr_label.pack(padx=10, pady=10)
+        
+        # URL display
+        ctk.CTkLabel(
+            popup,
+            text="Or type this URL:",
+            font=get_font(11),
+            text_color="#888888"
+        ).pack(pady=(15, 5))
+        
+        url_frame = ctk.CTkFrame(popup, fg_color="#252540", corner_radius=8)
+        url_frame.pack(padx=20, fill="x")
+        
+        url_label = ctk.CTkLabel(
+            url_frame,
+            text=url,
+            font=get_font(14, "bold"),
+            text_color="#4CAF50"
+        )
+        url_label.pack(pady=10)
+        
+        # Close button
+        ctk.CTkButton(
+            popup,
+            text="Close",
+            font=get_font(12),
+            fg_color="#555555",
+            hover_color="#444444",
+            height=35,
+            width=120,
+            command=popup.destroy
+        ).pack(pady=20)
+    
+    def notify_scores_updated(self):
+        """Notify the web server that scores have been updated."""
+        if self.web_server.is_running():
+            self.web_server.notify_update()
+    
     def on_close(self):
         """Handle application close."""
+        # Stop web server if running
+        if self.web_server.is_running():
+            self.web_server.stop()
         self.db.close()
         self.destroy()
 

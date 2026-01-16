@@ -12,3 +12,9 @@ reportlab>=4.0.0
 
 # Data export
 openpyxl>=3.1.0  # Excel export
+
+# Live scores web server (mobile-friendly)
+flask>=3.0.0
+
+# QR code generation for easy mobile access
+qrcode[pil]>=7.4.0

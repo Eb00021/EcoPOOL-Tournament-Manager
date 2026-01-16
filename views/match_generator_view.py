@@ -26,7 +26,7 @@ class MatchGeneratorView(ctk.CTkFrame):
         self.current_pairs = []  # List of (player1_id, player2_id) tuples
         self.generated_schedule = None
         self.current_league_night_id = None
-        self.buyin_amount = 10.0
+        self.buyin_amount = 3.0
         self.buyins_paid = {}  # player_id -> bool
         
         # Manual pairing state
@@ -36,6 +36,10 @@ class MatchGeneratorView(ctk.CTkFrame):
         self._initial_state = initial_pairings
         
         self.setup_ui()
+        
+        # Load persistent settings from database
+        self._load_persistent_settings()
+        
         self.load_players()
         
         # Restore state if provided (after UI is set up)
@@ -139,9 +143,9 @@ class MatchGeneratorView(ctk.CTkFrame):
         
         self.buyin_entry = ctk.CTkEntry(
             config_inner, width=60, height=30, font=get_font(13),
-            placeholder_text="10"
+            placeholder_text="3"
         )
-        self.buyin_entry.insert(0, "10")
+        self.buyin_entry.insert(0, "3")
         self.buyin_entry.pack(side="left", padx=5)
         
         # Two panels side by side: Players and Pairs/Buyins
@@ -390,12 +394,66 @@ class MatchGeneratorView(ctk.CTkFrame):
         new_val = max(1, min(10, self.table_count_var.get() + delta))
         self.table_count_var.set(new_val)
         self.table_count_label.configure(text=str(new_val))
+        # Save to database for persistence
+        self.db.set_setting("match_gen_table_count", str(new_val))
     
     def _adjust_min_games(self, delta: int):
         """Adjust the minimum games per pair."""
         new_val = max(1, min(10, self.min_games_var.get() + delta))
         self.min_games_var.set(new_val)
         self.min_games_label.configure(text=str(new_val))
+        # Save to database for persistence
+        self.db.set_setting("match_gen_min_games", str(new_val))
+    
+    def _load_persistent_settings(self):
+        """Load persistent settings from database."""
+        # Table count
+        saved_table_count = self.db.get_setting("match_gen_table_count", "3")
+        try:
+            table_count = int(saved_table_count)
+            self.table_count_var.set(table_count)
+            self.table_count_label.configure(text=str(table_count))
+        except ValueError:
+            pass
+        
+        # Min games per pair
+        saved_min_games = self.db.get_setting("match_gen_min_games", "4")
+        try:
+            min_games = int(saved_min_games)
+            self.min_games_var.set(min_games)
+            self.min_games_label.configure(text=str(min_games))
+        except ValueError:
+            pass
+        
+        # Buy-in amount
+        saved_buyin = self.db.get_setting("match_gen_buyin", "3")
+        try:
+            buyin = float(saved_buyin)
+            self.buyin_amount = buyin
+            self.buyin_entry.delete(0, 'end')
+            self.buyin_entry.insert(0, str(int(buyin) if buyin == int(buyin) else buyin))
+        except ValueError:
+            pass
+        
+        # Pair mode
+        saved_mode = self.db.get_setting("match_gen_pair_mode", "random")
+        if saved_mode in ("random", "skill", "manual"):
+            self.pair_mode_var.set(saved_mode)
+    
+    def _save_persistent_settings(self):
+        """Save current settings to database for persistence."""
+        self.db.set_setting("match_gen_table_count", str(self.table_count_var.get()))
+        self.db.set_setting("match_gen_min_games", str(self.min_games_var.get()))
+        
+        # Save buy-in amount
+        try:
+            buyin = float(self.buyin_entry.get())
+            self.db.set_setting("match_gen_buyin", str(buyin))
+        except ValueError:
+            pass
+        
+        # Save pair mode
+        self.db.set_setting("match_gen_pair_mode", self.pair_mode_var.get())
     
     def load_players(self):
         """Load players into the selection list."""
@@ -467,6 +525,9 @@ class MatchGeneratorView(ctk.CTkFrame):
             return
         
         mode = self.pair_mode_var.get()
+        
+        # Save pair mode setting
+        self.db.set_setting("match_gen_pair_mode", mode)
         
         if mode == "random":
             self.current_pairs = self.generator.generate_random_pairs(selected_ids)
@@ -611,7 +672,7 @@ class MatchGeneratorView(ctk.CTkFrame):
         try:
             self.buyin_amount = float(self.buyin_entry.get())
         except ValueError:
-            self.buyin_amount = 10.0
+            self.buyin_amount = 3.0
         
         # Get all unique players from pairs
         player_ids = set()
@@ -687,6 +748,9 @@ class MatchGeneratorView(ctk.CTkFrame):
         
         table_count = self.table_count_var.get()
         min_games = self.min_games_var.get()
+        
+        # Save all settings to database for persistence across app restarts
+        self._save_persistent_settings()
         
         self.generated_schedule = self.generator.generate_full_schedule(
             self.current_pairs,
@@ -782,25 +846,31 @@ class MatchGeneratorView(ctk.CTkFrame):
             print(f"Error restoring match generator state: {e}")
     
     def _display_schedule(self):
-        """Display the generated schedule."""
+        """Display the generated schedule organized by rounds."""
         if not self.generated_schedule:
             return
         
         schedule = self.generated_schedule
         
-        # Update stats
+        # Update stats with round info
         total_matches = schedule['total_matches']
+        total_rounds = schedule.get('total_rounds', 1)
         live_count = len(schedule['live_matches'])
-        queue_count = len(schedule['queued_matches'])
         
-        stats_text = f"{total_matches} games | {live_count} live | {queue_count} queued"
+        stats_text = f"{total_matches} games | {total_rounds} rounds | {live_count} starting"
         self.stats_label.configure(text=stats_text, text_color="#4CAF50")
         
-        # Clear and populate live games
+        # Clear and populate live games (Round 1 starting games)
         for widget in self.live_scroll.winfo_children():
             widget.destroy()
         
         if schedule['live_matches']:
+            ctk.CTkLabel(
+                self.live_scroll,
+                text="Round 1 - Starting Games",
+                font=get_font(12, "bold"),
+                text_color="#4CAF50"
+            ).pack(pady=(5, 5))
             for match in schedule['live_matches']:
                 self._create_match_card(self.live_scroll, match, is_live=True)
         else:
@@ -811,13 +881,30 @@ class MatchGeneratorView(ctk.CTkFrame):
                 text_color="#666666"
             ).pack(pady=10)
         
-        # Clear and populate queue
+        # Clear and populate queue - organized by rounds
         for widget in self.queue_scroll.winfo_children():
             widget.destroy()
         
         if schedule['queued_matches']:
-            for i, match in enumerate(schedule['queued_matches']):
-                self._create_match_card(self.queue_scroll, match, is_live=False, queue_num=i+1)
+            current_round = 0
+            queue_num = 0
+            for match in schedule['queued_matches']:
+                round_num = match.get('round_number', 1)
+                
+                # Add round header when round changes
+                if round_num != current_round:
+                    current_round = round_num
+                    round_header = ctk.CTkFrame(self.queue_scroll, fg_color="#2d4a70", corner_radius=6)
+                    round_header.pack(fill="x", pady=(10, 5))
+                    ctk.CTkLabel(
+                        round_header,
+                        text=f"Round {round_num}",
+                        font=get_font(12, "bold"),
+                        text_color="#64B5F6"
+                    ).pack(pady=5)
+                
+                queue_num += 1
+                self._create_match_card(self.queue_scroll, match, is_live=False, queue_num=queue_num)
         else:
             ctk.CTkLabel(
                 self.queue_scroll,
@@ -980,7 +1067,7 @@ class MatchGeneratorView(ctk.CTkFrame):
         try:
             buyin = float(self.buyin_entry.get())
         except ValueError:
-            buyin = 10.0
+            buyin = 3.0
         
         league_night_id = self.db.create_league_night(
             date=today,
@@ -1009,6 +1096,7 @@ class MatchGeneratorView(ctk.CTkFrame):
             
             status = 'live' if match.get('status') == 'live' else 'queued'
             table_num = match.get('table_number', 0) or 0
+            round_num = match.get('round_number', 1)
             
             try:
                 self.db.create_match(
@@ -1024,17 +1112,20 @@ class MatchGeneratorView(ctk.CTkFrame):
                     pair2_id=pair_id_map.get(match['pair2_idx']),
                     queue_position=match.get('queue_position', 0),
                     status=status,
-                    season_id=season_id
+                    season_id=season_id,
+                    round_number=round_num
                 )
                 created += 1
             except Exception as e:
                 print(f"Error creating match: {e}")
         
+        total_rounds = schedule.get('total_rounds', 1)
         messagebox.showinfo(
             "Success",
-            f"Created {created} matches!\n\n"
+            f"Created {created} matches in {total_rounds} rounds!\n\n"
             f"League Night ID: {league_night_id}\n"
-            f"Tables: {self.table_count_var.get()}\n"
+            f"Tables: {self.table_count_var.get()}\n\n"
+            f"Rounds ensure no pair plays at multiple tables simultaneously.\n"
             f"Go to Table Tracker to manage live games."
         )
         
