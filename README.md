@@ -7,48 +7,74 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 
 ## Features
 
+### 🏠 Dashboard
+- Quick stats (players, matches, active games)
+- One-click navigation to Match Generator, Scorecard, Tournament, Players, and Leaderboard
+- Recent matches and quick rules reference
+
 ### 👥 Player Management
 - Add, edit, and remove league members
-- Track player statistics across all games
-- View win rates, total points, and golden breaks
+- Profile pictures, email, and Venmo
+- Track statistics: wins, win rate, total points, golden breaks, legal 8-ball sinks
 - Search and filter players
+- Export/import players (JSON)
 
 ### 🎲 Match Generator
-- **Random Mode**: Automatically generate random 2v2 team pairings for league night
-- **Ranked Finals Mode**: Create seeded bracket matchups based on player performance
-- Handle odd player counts with "Lone Wolf" mode
-- Create matches with one click
+- **Random pairs** or **skill-based pairs** (balance high/low ranked)
+- **Lone Wolf** mode for odd player counts
+- **Multi-round schedule**: generates rounds so matches on different tables can run at once without any pair playing twice in the same round
+- Optional avoidance of repeat matchups from past nights
+- Configurable table count and minimum games per pair
+- Create matches and assign to tables; pairings persist when switching views before saving
 
 ### 🎯 Interactive Scorecard
-- Visual pool table with clickable balls
-- Real-time score tracking (1 pt per ball, 3 pts for 8-ball)
-- Best of 3 game format
+- Visual pool table with clickable balls (Solids vs Stripes)
+- Real-time scoring: 1 pt per ball, 3 pts for 8-ball (max 10 per team per game)
+- Best of 3 format
 - Special events:
   - ⭐ Golden Break (17 points for 8-ball on break)
   - ❌ Early 8-ball foul (10 points to opponent)
-- Group assignment (Solids vs Stripes)
-- Per-game state saving
+- Per-game state and ball positions saved
+- Export scorecard to PDF
 
-### 🎱 Pool Table Tracker
-- Visual overview of all tables at the venue
-- See which tables have active matches
-- Configurable table count (4-12)
-- Real-time status updates
+### 🎱 Table Tracker
+- Overview of all tables at the venue
+- See which tables have active or completed matches
+- Configurable table count
+- Click a match to jump to Scorecard with that match selected
+
+### 🏆 Tournament Bracket
+- Seeded bracket for end-of-semester finals (4, 8, 16, or 32 players)
+- Visual bracket with profile pictures and animations
+- Export bracket to PDF
 
 ### 📜 Match History
-- Complete history of all matches
-- Filter by status (complete, in progress, finals)
+- Full history of matches with filters (complete, in progress, finals)
 - View detailed game results
-- Delete old matches
+- Delete matches; export to PDF or CSV
 
-### 🏆 Leaderboard
-- Player rankings with multiple sort options
-- Track wins, win rate, total points, average points
-- Gold, silver, and bronze highlighting for top 3
+### 📊 Leaderboard
+- Rankings with sort by wins, win rate, points, or average points
+- Gold, silver, bronze for top 3
+- Export to PDF or CSV
 
-### 📄 Export Functionality
-- **PDF Export**: High-quality scorecards and leaderboards
-- **CSV Export**: Player data and match history for spreadsheets
+### 📱 Live Scores Web Server
+- Built-in Flask server to show live scores on phones and tablets
+- **Server-Sent Events (SSE)** for real-time updates without refresh
+- **QR code** for quick mobile access (requires `qrcode[pil]`)
+- Profile pictures on the live score view
+- Start/stop from the sidebar; share the URL or QR with spectators
+
+### 📄 Export & Data Management
+- **PDF**: Scorecards, leaderboard, match history, match diagram, bracket
+- **CSV**: Players, matches
+- **JSON**: Save/load match history (backup/restore); export/import players
+- **New Pool Night**: Clear incomplete matches, keep completed games for leaderboard; optional save before clearing
+
+### ✨ Animations & UI
+- Custom fonts and dark theme
+- Animated cards and buttons on the dashboard
+- Celebration effects
 
 ## Installation
 
@@ -74,65 +100,83 @@ python main.py
 
 ### First Time Setup
 1. Launch the application
-2. Go to **Players** → Add your league members
-3. Use **Match Generator** to create matches for league night
+2. Go to **Players** → Add your league members (and optionally profile pictures)
+3. Use **Match Generator** to create pairs and then matches for league night
 
 ### League Night Workflow
-1. **Before the night**: Use Match Generator to create random team pairings
-2. **During play**: Open Scorecard to track each match
-3. **Scoring a game**:
-   - Select the current match from dropdown
-   - Set which team has Solids vs Stripes
-   - Click balls on the table to pocket them
-   - Use "Pocket for Team 1/2" radio buttons
-   - Click "Team X Wins" when game is complete
-4. **After the night**: View Leaderboard to see updated standings
+1. **Before**: Match Generator → choose Random or Skill-based pairs → generate rounds → Create Matches
+2. **During play**: **Table Tracker** to see tables; **Scorecard** to track a match. On the scorecard:
+   - Select the match, set Solids vs Stripes, click balls to pocket, use “Pocket for Team 1/2,” then “Team X Wins” when the game is done
+3. **Live scores**: Sidebar → **Start Server** → **Show QR Code** so phones can view scores in real time
+4. **After**: **Leaderboard** for standings; **Data Management** → Save Match History (JSON) if you want a backup
 
-### Scoring Rules (from EcoPOOL Ruleset)
-- Regular balls (1-7 solids, 9-15 stripes): **1 point each**
+### Data Management (Sidebar)
+- **New Pool Night**: Clear incomplete matches; completed games stay in the leaderboard
+- **Save / Load**: Match history to/from JSON
+- **Export / Import**: Players to/from JSON
+
+### Scoring Rules (EcoPOOL)
+- Regular balls (1–7 solids, 9–15 stripes): **1 point each**
 - 8-ball: **3 points**
-- Maximum per team: **10 points**
-- Golden Break (8-ball on break): **17 points** to breaking team
-- Early 8-ball foul: **10 points** to opposing team
+- Maximum per team per game: **10 points**
+- Golden Break (8 on break): **17 points** to the breaking team
+- Early 8-ball foul: **10 points** to the opposing team
 
 ## File Structure
 
 ```
 EcoPOOL Toolkit/
-├── main.py              # Main application entry point
-├── database.py          # SQLite database manager
-├── match_generator.py   # Random/ranked match generation
-├── exporter.py          # PDF and CSV export
-├── requirements.txt     # Python dependencies
-├── ecopool_league.db    # SQLite database (created on first run)
+├── main.py                 # Main application and UI
+├── database.py             # SQLite database (players, matches, games, seasons, league nights, pairs, buy-ins)
+├── match_generator.py      # Pair and round-based schedule generation
+├── exporter.py             # PDF, CSV, JSON export/import
+├── web_server.py          # Live scores Flask server (SSE, QR, mobile)
+├── animations.py           # Animated cards, buttons, celebrations
+├── fonts.py                # Custom fonts
+├── profile_pictures.py     # Profile picture handling
+├── requirements.txt
+├── profile_pictures/       # Player profile images
+├── fonts/                  # Custom font files
 ├── views/
-│   ├── players_view.py       # Player management
-│   ├── match_generator_view.py   # Match creation
-│   ├── scorecard_view.py     # Interactive scoring
-│   ├── leaderboard_view.py   # Rankings display
-│   ├── history_view.py       # Match history
-│   └── table_tracker_view.py # Table status
-└── EcoPOOL RULES.txt    # Official league rules
+│   ├── players_view.py
+│   ├── match_generator_view.py
+│   ├── scorecard_view.py
+│   ├── table_tracker_view.py
+│   ├── bracket_view.py
+│   ├── history_view.py
+│   └── leaderboard_view.py
+└── (ecopool_league.db created on first run)
 ```
 
 ## Database
 
-The application uses SQLite for persistent storage. The database file `ecopool_league.db` is created automatically on first run and contains:
+SQLite (`ecopool_league.db`) is created on first run. Main tables:
 
-- **players**: League member information
-- **matches**: Match pairings and metadata
-- **games**: Individual game scores and ball states
-- **league_nights**: Optional league night tracking
-- **rsvps**: Optional RSVP tracking
+- **players** — Names, email, Venmo, profile picture, stats derived from games
+- **matches** — Pairings, table, best-of, finals flag, queue/round/status for scheduling
+- **games** — Per-game scores, ball states, golden break, early 8-ball
+- **seasons** — Season name and dates
+- **league_nights** — Date, location, table count, buy-in, optional season
+- **league_night_pairs** — Fixed pairs for a league night
+- **league_night_buyins** — Buy-in and payment status per player per night
+
+## Dependencies
+
+- **customtkinter** — GUI
+- **Pillow** — Images and pool table graphics
+- **reportlab** — PDF export
+- **openpyxl** — Excel export
+- **flask** — Live scores web server
+- **qrcode[pil]** — QR code for mobile access to live scores
 
 ## Contributing
 
-This application was created for the WVU EcoCAR pool league. Feel free to modify and adapt for your own league!
+This application was created for the WVU EcoCAR pool league. Feel free to modify and adapt for your own league.
 
 ## License
 
-MIT License - Feel free to use and modify for your own pool leagues.
+MIT License — Use and modify for your own pool leagues.
 
 ---
 
-*WVU EcoCAR Pool League - Thursday Nights at The Met Pool Hall*
+*WVU EcoCAR Pool League — Thursday Nights at The Met Pool Hall*
