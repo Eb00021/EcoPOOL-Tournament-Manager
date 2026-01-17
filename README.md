@@ -81,7 +81,6 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 ### ⚙️ Settings
 - Application preferences and configuration
 - Theme customization
-- Sound settings
 - Database management options
 
 ### 📱 Live Scores Web Server
@@ -188,13 +187,11 @@ EcoPOOL Toolkit/
 ├── advanced_stats.py        # Advanced statistics calculations
 ├── venmo_integration.py    # Venmo payment integration
 ├── themes.py              # Theme management
-├── sounds.py               # Sound effects management
 ├── undo_manager.py         # Undo/redo functionality
 ├── spectator_reactions.py  # Spectator reaction system
 ├── requirements.txt
 ├── profile_pictures/       # Player profile images
 ├── fonts/                  # Custom font files
-├── sounds/                 # Sound effect files
 ├── templates/              # Web interface HTML templates
 ├── static/                 # Web interface CSS and JavaScript
 ├── views/

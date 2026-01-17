@@ -1,6 +1,6 @@
 """
 EcoPOOL League - Settings View
-Application settings including themes, sounds, and preferences.
+Application settings including themes and preferences.
 """
 
 import customtkinter as ctk
@@ -10,7 +10,6 @@ import shutil
 from datetime import datetime
 from database import DatabaseManager
 from themes import ThemeManager, THEMES, get_theme_manager
-from sounds import SoundManager, get_sound_manager, SOUNDS
 from fonts import get_font
 
 
@@ -21,7 +20,6 @@ class SettingsView(ctk.CTkFrame):
         super().__init__(parent, fg_color='transparent')
         self.db = db
         self.theme_mgr = get_theme_manager(db)
-        self.sound_mgr = get_sound_manager()
         self.on_theme_change = on_theme_change
 
         self.setup_ui()
@@ -103,81 +101,6 @@ class SettingsView(ctk.CTkFrame):
             fg_color='#333333',
             progress_color='#4CAF50'
         ).pack(side='right')
-
-        # ========== Sound Section ==========
-        self._create_section(content, '🔊 Sound')
-
-        sound_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
-        sound_card.pack(fill='x', pady=10)
-
-        # Sound enabled
-        sound_toggle = ctk.CTkFrame(sound_card, fg_color='transparent')
-        sound_toggle.pack(fill='x', padx=20, pady=15)
-
-        ctk.CTkLabel(
-            sound_toggle,
-            text='Sound Effects',
-            font=get_font(14, 'bold')
-        ).pack(anchor='w')
-
-        sounds_enabled = self.db.get_setting('sounds_enabled', 'true') == 'true'
-        self.sounds_var = ctk.BooleanVar(value=sounds_enabled)
-
-        toggle_row = ctk.CTkFrame(sound_toggle, fg_color='transparent')
-        toggle_row.pack(fill='x', pady=5)
-
-        ctk.CTkLabel(
-            toggle_row,
-            text='Enable sound effects',
-            font=get_font(12),
-            text_color='#888888'
-        ).pack(side='left')
-
-        ctk.CTkSwitch(
-            toggle_row,
-            text='',
-            variable=self.sounds_var,
-            command=self._toggle_sounds,
-            fg_color='#333333',
-            progress_color='#4CAF50'
-        ).pack(side='right')
-
-        # Volume slider
-        volume_row = ctk.CTkFrame(sound_card, fg_color='transparent')
-        volume_row.pack(fill='x', padx=20, pady=(0, 15))
-
-        ctk.CTkLabel(
-            volume_row,
-            text='Volume',
-            font=get_font(12)
-        ).pack(side='left')
-
-        saved_volume = float(self.db.get_setting('sound_volume', '1.0'))
-        self.volume_var = ctk.DoubleVar(value=saved_volume)
-
-        volume_slider = ctk.CTkSlider(
-            volume_row,
-            from_=0,
-            to=1,
-            variable=self.volume_var,
-            command=self._set_volume,
-            width=200
-        )
-        volume_slider.pack(side='right')
-
-        # Test sound button
-        test_row = ctk.CTkFrame(sound_card, fg_color='transparent')
-        test_row.pack(fill='x', padx=20, pady=(0, 15))
-
-        ctk.CTkButton(
-            test_row,
-            text='🔔 Test Sound',
-            font=get_font(12),
-            fg_color='#3d5a80',
-            hover_color='#2d4a70',
-            height=35,
-            command=self._test_sound
-        ).pack(side='left')
 
         # ========== Venmo Section ==========
         self._create_section(content, '💳 Venmo Settings')
@@ -463,21 +386,6 @@ class SettingsView(ctk.CTkFrame):
         self.theme_mgr.toggle_dark_mode()
         if self.on_theme_change:
             self.on_theme_change(self.theme_mgr.current_theme)
-
-    def _toggle_sounds(self):
-        """Toggle sound effects."""
-        enabled = self.sounds_var.get()
-        self.sound_mgr.set_enabled(enabled)
-        self.db.set_setting('sounds_enabled', str(enabled).lower())
-
-    def _set_volume(self, value):
-        """Set sound volume."""
-        self.sound_mgr.set_volume(value)
-        self.db.set_setting('sound_volume', str(value))
-
-    def _test_sound(self):
-        """Play a test sound."""
-        self.sound_mgr.play_notification()
 
     def _save_venmo(self):
         """Save organizer Venmo username."""
