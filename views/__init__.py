@@ -6,6 +6,8 @@ from views.leaderboard_view import LeaderboardView
 from views.history_view import HistoryView
 from views.table_tracker_view import TableTrackerView
 from views.bracket_view import BracketView
+from views.stats_view import StatsView
+from views.payments_view import PaymentsView
 
 __all__ = [
     'PlayersView',
@@ -15,4 +17,6 @@ __all__ = [
     'HistoryView',
     'TableTrackerView',
     'BracketView',
+    'StatsView',
+    'PaymentsView',
 ]

@@ -6,6 +6,7 @@ Interactive scoring and ball tracking with celebration animations.
 import customtkinter as ctk
 from tkinter import Canvas, messagebox, filedialog
 import math
+import json
 from database import DatabaseManager
 from exporter import Exporter
 from animations import flash_widget
@@ -786,6 +787,9 @@ class ScorecardView(ctk.CTkFrame):
         # Initialize game 1
         self.select_game(1)
         self.update_match_status()
+        
+        # Set up auto-refresh timer to check for external updates (from web interface)
+        self._setup_auto_refresh()
     
     def select_game(self, game_num):
         """Select which game to score."""
@@ -821,18 +825,26 @@ class ScorecardView(ctk.CTkFrame):
         self.pool_table.reset_balls()
         
         balls = game.get('balls_pocketed', {})
+        if isinstance(balls, str):
+            try:
+                balls = json.loads(balls)
+            except:
+                balls = {}
+        
         for ball_str, team in balls.items():
             ball_num = int(ball_str)
             self.pool_table.pocket_ball(ball_num, team)
         
-        if game['team1_group']:
+        if game.get('team1_group'):
             self.set_group(game['team1_group'], save=False)
         
         # Check if game is already complete
         if game.get('winner_team', 0) > 0:
             self.set_game_over_state()
+            self._game_was_complete = True
         else:
             self.set_game_active_state()
+            self._game_was_complete = False
         
         self.update_scores()
         self.update_progress_visualization()
@@ -1473,3 +1485,65 @@ class ScorecardView(ctk.CTkFrame):
                 messagebox.showinfo("Success", f"Scorecard exported to:\n{filepath}")
             else:
                 messagebox.showerror("Error", "Failed to export scorecard.")
+    
+    def _setup_auto_refresh(self):
+        """Set up automatic refresh to check for external updates."""
+        def check_for_updates():
+            if not self.current_match or not self.current_game_id:
+                # Schedule next check
+                self.after(2000, check_for_updates)
+                return
+            
+            try:
+                # Reload current game from database to check for external changes
+                game = self.db.get_game(self.current_game_id)
+                if game:
+                    # Check if balls_pocketed or scores have changed
+                    current_balls = {}
+                    for ball_num, state in self.pool_table.ball_states.items():
+                        if state.startswith('pocketed_team'):
+                            current_balls[str(ball_num)] = int(state[-1])
+                    
+                    saved_balls = game.get('balls_pocketed', {})
+                    if isinstance(saved_balls, str):
+                        try:
+                            saved_balls = json.loads(saved_balls)
+                        except:
+                            saved_balls = {}
+                    
+                    # Compare balls
+                    if current_balls != saved_balls:
+                        # External change detected - reload game state
+                        self.load_game_state(game)
+                    
+                    # Check scores
+                    current_team1_score = int(self.team1_score_label.cget("text"))
+                    current_team2_score = int(self.team2_score_label.cget("text"))
+                    if (current_team1_score != game.get('team1_score', 0) or 
+                        current_team2_score != game.get('team2_score', 0)):
+                        # Scores changed externally - reload
+                        self.load_game_state(game)
+                    
+                    # Check for winner change
+                    if game.get('winner_team', 0) > 0:
+                        if not hasattr(self, '_game_was_complete') or not self._game_was_complete:
+                            self._game_was_complete = True
+                            self.load_game_state(game)
+                            self.update_match_status()
+                
+                # Check match status
+                match = self.db.get_match(self.current_match['id'])
+                if match:
+                    if match.get('is_complete') != self.current_match.get('is_complete'):
+                        # Match completion status changed
+                        self.current_match = match
+                        self.update_match_status()
+            except Exception as e:
+                # Silently handle errors - don't spam console
+                pass
+            
+            # Schedule next check (every 2 seconds)
+            self.after(2000, check_for_updates)
+        
+        # Start checking after a short delay
+        self.after(2000, check_for_updates)

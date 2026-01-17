@@ -4,12 +4,17 @@ A comprehensive pool league management application for the WVU EcoCAR team.
 
 Features:
 - Player Management with statistics tracking and profile pictures
-- Random partner and match generation
+- Random partner and match generation with multi-round scheduling
 - Tournament bracket generation for end-of-semester finals
 - Interactive scorecard with pool table visualization
 - Match history and leaderboard with animations
 - Pool table tracking for the venue
-- Export to PDF and CSV
+- Live scores web server with Server-Sent Events (SSE)
+- Achievements system with tier-based badges
+- Advanced statistics (head-to-head, form, predictions)
+- Venmo payment integration for buy-ins
+- Settings and theme customization
+- Export to PDF, CSV, and JSON
 - Cool animations and celebration effects
 
 Run with: python main.py
@@ -42,8 +47,11 @@ from views.leaderboard_view import LeaderboardView
 from views.history_view import HistoryView
 from views.table_tracker_view import TableTrackerView
 from views.bracket_view import BracketView
+from views.stats_view import StatsView
+from views.payments_view import PaymentsView
 from animations import AnimatedCard, AnimatedButton, show_celebration
 from web_server import LiveScoreServer
+from themes import get_theme_manager
 
 
 class EcoPoolApp(ctk.CTk):
@@ -151,6 +159,8 @@ class EcoPoolApp(ctk.CTk):
             ("tables", "🎱 Table Tracker", lambda: self.show_view("tables")),
             ("history", "📜 Match History", lambda: self.show_view("history")),
             ("leaderboard", "📊 Leaderboard", lambda: self.show_view("leaderboard")),
+            ("stats", "📈 Advanced Stats", lambda: self.show_view("stats")),
+            ("payments", "💳 Payments", lambda: self.show_view("payments")),
         ]
         
         nav_frame = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
@@ -554,6 +564,12 @@ class EcoPoolApp(ctk.CTk):
             view.pack(fill="both", expand=True)
         elif view_name == "leaderboard":
             view = LeaderboardView(self.content, self.db)
+            view.pack(fill="both", expand=True)
+        elif view_name == "stats":
+            view = StatsView(self.content, self.db)
+            view.pack(fill="both", expand=True)
+        elif view_name == "payments":
+            view = PaymentsView(self.content, self.db)
             view.pack(fill="both", expand=True)
     
     def new_pool_night(self):

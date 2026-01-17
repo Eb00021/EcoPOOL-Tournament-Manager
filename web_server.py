@@ -13,7 +13,7 @@ import atexit
 import signal
 import sys
 from datetime import datetime
-from flask import Flask, Response, render_template_string, jsonify, send_file, abort
+from flask import Flask, Response, render_template, jsonify, send_file, abort, request
 import logging
 
 # Suppress Flask's default logging to keep console clean
@@ -31,7 +31,19 @@ class LiveScoreServer:
         self.db = db_manager
         self.db_path = db_manager.db_path  # Store path for creating thread-local connections
         self.port = port
-        self.app = Flask(__name__)
+        # Set template and static folders relative to this file
+        template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+        static_dir = os.path.join(os.path.dirname(__file__), 'static')
+        self.app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
+        
+        # Disable caching for development - ensures fresh CSS/JS on each request
+        @self.app.after_request
+        def add_no_cache_headers(response):
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
+        
         self.server_thread = None
         self.running = False
         self._last_data_hash = None
@@ -41,17 +53,51 @@ class LiveScoreServer:
         # Thread-local storage for database connections
         self._local = threading.local()
         
+        # Initialize reaction manager
+        from spectator_reactions import get_reaction_manager
+        self.reaction_manager = get_reaction_manager()
+        # Register callback to notify clients of new reactions
+        self.reaction_manager.register_callback(self._on_reaction)
+        
         # Register for global cleanup
         _active_servers.append(self)
         
         # Setup routes
         self._setup_routes()
     
+    def _on_reaction(self, reaction):
+        """Callback when a new reaction is added - triggers update event."""
+        self._update_event.set()
+    
     def _get_thread_db(self):
-        """Get a thread-local database connection."""
-        if not hasattr(self._local, 'db'):
+        """Get a thread-local database connection for manager mode operations.
+        
+        Ensures the database is properly initialized and accessible.
+        """
+        # Ensure db_path is valid
+        if not hasattr(self, 'db_path') or not self.db_path:
+            raise ValueError("Database path not set. Cannot access database.")
+        
+        if not hasattr(self._local, 'db') or self._local.db is None:
             from database import DatabaseManager
-            self._local.db = DatabaseManager(self.db_path)
+            try:
+                # Create a new database manager instance for this thread
+                self._local.db = DatabaseManager(self.db_path)
+                # Ensure database is initialized by attempting a simple operation
+                # This will create tables if they don't exist
+                _ = self._local.db.get_setting('test', '')
+            except Exception as e:
+                # Log the error but don't fail silently
+                import traceback
+                print(f"Error initializing database for manager mode: {e}")
+                print(f"Database path: {self.db_path}")
+                traceback.print_exc()
+                # Try to reinitialize
+                try:
+                    self._local.db = DatabaseManager(self.db_path)
+                except Exception as e2:
+                    print(f"Failed to reinitialize database: {e2}")
+                    raise
         return self._local.db
     
     def _setup_routes(self):
@@ -59,7 +105,7 @@ class LiveScoreServer:
         
         @self.app.route('/')
         def index():
-            return render_template_string(self._get_html_template())
+            return render_template('index.html')
         
         @self.app.route('/api/scores')
         def get_scores():
@@ -98,9 +144,28 @@ class LiveScoreServer:
             """Server-Sent Events endpoint for live updates."""
             def generate():
                 while self.running and not self._shutdown_event.is_set():
-                    # Send current data
-                    data = self._get_scores_data()
-                    yield f"data: {json.dumps(data)}\n\n"
+                    try:
+                        # Send current data
+                        data = self._get_scores_data()
+                        yield f"data: {json.dumps(data)}\n\n"
+                    except Exception as e:
+                        # Send error state but keep connection alive
+                        error_data = {
+                            'timestamp': datetime.now().strftime('%I:%M:%S %p'),
+                            'error': str(e),
+                            'live_matches': [],
+                            'completed_matches': [],
+                            'queue': [],
+                            'tables': [],
+                            'leaderboard': [],
+                            'league_stats': {},
+                            'round_progress': None,
+                            'reactions': [],
+                            'total_live': 0,
+                            'total_completed': 0,
+                            'total_queued': 0
+                        }
+                        yield f"data: {json.dumps(error_data)}\n\n"
                     
                     # Wait for update signal or timeout (poll every 2 seconds)
                     self._update_event.wait(timeout=2.0)
@@ -115,6 +180,1082 @@ class LiveScoreServer:
                     'Access-Control-Allow-Origin': '*'
                 }
             )
+        
+        # Manager Mode API endpoints
+        @self.app.route('/api/manager/verify-password', methods=['POST'])
+        def verify_manager_password():
+            """Verify manager password."""
+            try:
+                data = request.get_json()
+                password = data.get('password', '')
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                
+                if stored_password and password == stored_password:
+                    return jsonify({'success': True})
+                return jsonify({'success': False, 'error': 'Incorrect password'})
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
+        
+        @self.app.route('/api/manager/match/<int:match_id>', methods=['GET'])
+        def get_manager_match(match_id):
+            """Get match data for manager mode."""
+            try:
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'error': 'Database connection failed'}), 500
+                
+                match = db.get_match(match_id)
+                if not match:
+                    return jsonify({'error': 'Match not found'}), 404
+                
+                games = db.get_games_for_match(match_id)
+                if games is None:
+                    games = []
+                
+                # If no games exist for this match, create game 1 automatically
+                # This ensures manager mode can always work with a live match
+                if len(games) == 0 and not match.get('is_complete', False):
+                    try:
+                        db.create_game(match_id, game_number=1, breaking_team=1)
+                        games = db.get_games_for_match(match_id)
+                        if games is None:
+                            games = []
+                    except Exception as e:
+                        print(f"Error creating game 1: {e}")
+                
+                # If all games are complete but match isn't complete, create next game
+                if games and all(g.get('winner_team', 0) != 0 for g in games) and not match.get('is_complete', False):
+                    next_game_number = len(games) + 1
+                    best_of = match.get('best_of', 3)
+                    # Only create if we haven't reached the max games
+                    if next_game_number <= best_of:
+                        try:
+                            db.create_game(match_id, game_number=next_game_number, breaking_team=1)
+                            games = db.get_games_for_match(match_id)
+                            if games is None:
+                                games = []
+                        except Exception as e:
+                            print(f"Error creating game {next_game_number}: {e}")
+                
+                # Normalize winner_team values to ensure consistency (0 for active games)
+                for game in games:
+                    if game.get('winner_team') is None or game.get('winner_team') == '':
+                        game['winner_team'] = 0
+                    else:
+                        # Ensure it's an integer
+                        try:
+                            game['winner_team'] = int(game['winner_team'])
+                        except (ValueError, TypeError):
+                            game['winner_team'] = 0
+                
+                # Format team names for display (same as regular match endpoint)
+                team1_p1_first = (match.get('team1_p1_name') or "TBD").split()[0] if match.get('team1_p1_name') else "TBD"
+                team1_p2_first = match.get('team1_p2_name', '').split()[0] if match.get('team1_p2_name') else None
+                team2_p1_first = (match.get('team2_p1_name') or "TBD").split()[0] if match.get('team2_p1_name') else "TBD"
+                team2_p2_first = match.get('team2_p2_name', '').split()[0] if match.get('team2_p2_name') else None
+                
+                team1 = team1_p1_first
+                if team1_p2_first:
+                    team1 += f" & {team1_p2_first}"
+                
+                team2 = team2_p1_first
+                if team2_p2_first:
+                    team2 += f" & {team2_p2_first}"
+                
+                # Calculate match scores
+                t1_wins = sum(1 for g in games if g.get('winner_team') == 1)
+                t2_wins = sum(1 for g in games if g.get('winner_team') == 2)
+                
+                # Get current game's group assignment
+                current_game_group = ''
+                for g in games:
+                    if g.get('winner_team', 0) == 0:
+                        current_game_group = g.get('team1_group', '')
+                        break
+                if not current_game_group and games:
+                    current_game_group = games[-1].get('team1_group', '')
+                
+                # Format match for frontend (consistent with regular match endpoint)
+                formatted_match = {
+                    'id': match_id,
+                    'team1': team1,
+                    'team2': team2,
+                    'team1_games': t1_wins,
+                    'team2_games': t2_wins,
+                    'best_of': match.get('best_of') or 1,
+                    'is_finals': match.get('is_finals', False),
+                    'is_complete': match.get('is_complete', False),
+                    'table': match.get('table_number') or 0,
+                    'team1_group': current_game_group,
+                    # Also include raw names for manager panel
+                    'team1_p1_name': match.get('team1_p1_name'),
+                    'team1_p2_name': match.get('team1_p2_name'),
+                    'team2_p1_name': match.get('team2_p1_name'),
+                    'team2_p2_name': match.get('team2_p2_name'),
+                }
+                
+                return jsonify({
+                    'match': formatted_match,
+                    'games': games
+                })
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                traceback.print_exc()
+                return jsonify({'error': f'Database error: {error_msg}'}), 500
+        
+        @self.app.route('/api/manager/pocket-ball', methods=['POST'])
+        def pocket_ball():
+            """Pocket a ball (manager mode)."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                ball_number = data.get('ball_number')
+                team = data.get('team')  # 1 or 2
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Get current game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number and g.get('winner_team', 0) == 0:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found or completed'})
+                
+                # Update ball state - balls_pocketed may already be parsed as dict by database layer
+                balls_data = current_game.get('balls_pocketed', {})
+                if isinstance(balls_data, str):
+                    balls = json.loads(balls_data) if balls_data else {}
+                else:
+                    balls = balls_data if balls_data else {}
+                ball_str = str(ball_number)
+                
+                # Define ball groups
+                SOLIDS = ['1', '2', '3', '4', '5', '6', '7']
+                STRIPES = ['9', '10', '11', '12', '13', '14', '15']
+                
+                # Get current group assignment and breaking team
+                team1_group = current_game.get('team1_group', '')  # 'solids' or 'stripes'
+                breaking_team = current_game.get('breaking_team', 1)  # Which team is breaking
+                group_changed = False
+                
+                # Handle ball state changes
+                if ball_str in balls:
+                    # Toggle: if same team, remove; if different team, switch
+                    if balls[ball_str] == team:
+                        del balls[ball_str]
+                    else:
+                        balls[ball_str] = team
+                else:
+                    if team != 0:  # Only add if assigning to a team
+                        balls[ball_str] = team
+                
+                # AUTO-ASSIGN GROUP: If no group assigned yet and a non-8 ball is pocketed
+                # The BREAKING TEAM gets the group based on what ball type is pocketed first
+                if not team1_group and ball_str != '8' and team in [1, 2]:
+                    if ball_str in SOLIDS:
+                        # A solid was pocketed - breaking team gets solids
+                        if breaking_team == 1:
+                            team1_group = 'solids'
+                        else:
+                            team1_group = 'stripes'  # Breaking team (2) gets solids, so Team 1 gets stripes
+                        group_changed = True
+                    elif ball_str in STRIPES:
+                        # A stripe was pocketed - breaking team gets stripes
+                        if breaking_team == 1:
+                            team1_group = 'stripes'
+                        else:
+                            team1_group = 'solids'  # Breaking team (2) gets stripes, so Team 1 gets solids
+                        group_changed = True
+                
+                # Calculate scores based on group assignment
+                team1_score = 0
+                team2_score = 0
+                
+                for ball, pocketing_team in balls.items():
+                    if ball == '8':
+                        # 8-ball is worth 3 points to whoever pockets it legally
+                        if pocketing_team == 1:
+                            team1_score += 3
+                        elif pocketing_team == 2:
+                            team2_score += 3
+                    elif team1_group:
+                        # With group assignment: points go to the team whose group the ball belongs to
+                        if team1_group == 'solids':
+                            if ball in SOLIDS:
+                                team1_score += 1
+                            elif ball in STRIPES:
+                                team2_score += 1
+                        else:  # team1 has stripes
+                            if ball in STRIPES:
+                                team1_score += 1
+                            elif ball in SOLIDS:
+                                team2_score += 1
+                    else:
+                        # No group assignment yet: points go to pocketing team
+                        if pocketing_team == 1:
+                            team1_score += 1
+                        elif pocketing_team == 2:
+                            team2_score += 1
+                
+                # Cap at 10 points per team
+                team1_score = min(team1_score, 10)
+                team2_score = min(team2_score, 10)
+                
+                # Check for illegal 8-ball pocket
+                # Case 1: 8-ball pocketed on the break (before groups assigned) - loss for pocketing team
+                # Case 2: 8-ball pocketed before clearing all assigned balls - loss for pocketing team
+                illegal_8ball = False
+                illegal_8ball_losing_team = None
+                early_8ball_on_break = False
+                
+                if ball_str == '8' and team in [1, 2]:
+                    if not team1_group:
+                        # 8-ball pocketed on the break (no groups assigned yet)
+                        # This is a loss for the pocketing team (standard bar rules)
+                        illegal_8ball = True
+                        illegal_8ball_losing_team = team
+                        early_8ball_on_break = True
+                    else:
+                        # Groups are assigned - check if pocketing team cleared all their balls
+                        team1_balls = SOLIDS if team1_group == 'solids' else STRIPES
+                        team2_balls = STRIPES if team1_group == 'solids' else SOLIDS
+                        
+                        # Count how many of the pocketing team's balls have been pocketed
+                        if team == 1:
+                            # Team 1 pocketed the 8-ball
+                            team1_cleared = sum(1 for b in team1_balls if str(b) in balls)
+                            if team1_cleared < 7:
+                                # Illegal! Team 1 hasn't cleared all their balls
+                                illegal_8ball = True
+                                illegal_8ball_losing_team = 1
+                        else:
+                            # Team 2 pocketed the 8-ball
+                            team2_cleared = sum(1 for b in team2_balls if str(b) in balls)
+                            if team2_cleared < 7:
+                                # Illegal! Team 2 hasn't cleared all their balls
+                                illegal_8ball = True
+                                illegal_8ball_losing_team = 2
+                
+                # Update game in database (include group if it changed)
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                if group_changed:
+                    cursor.execute('''
+                        UPDATE games 
+                        SET team1_score = ?, team2_score = ?, balls_pocketed = ?, team1_group = ?
+                        WHERE id = ?
+                    ''', (team1_score, team2_score, json.dumps(balls), team1_group, current_game['id']))
+                else:
+                    cursor.execute('''
+                        UPDATE games 
+                        SET team1_score = ?, team2_score = ?, balls_pocketed = ?
+                        WHERE id = ?
+                    ''', (team1_score, team2_score, json.dumps(balls), current_game['id']))
+                conn.commit()
+                
+                # Handle illegal 8-ball - end the game with the other team winning
+                if illegal_8ball:
+                    winning_team = 2 if illegal_8ball_losing_team == 1 else 1
+                    cursor.execute('''
+                        UPDATE games 
+                        SET early_8ball_team = ?, winner_team = ?
+                        WHERE id = ?
+                    ''', (illegal_8ball_losing_team, winning_team, current_game['id']))
+                    conn.commit()
+                    
+                    # Check if match is complete
+                    games = db.get_games_for_match(match_id)
+                    match = db.get_match(match_id)
+                    best_of = match.get('best_of', 3)
+                    team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
+                    team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
+                    
+                    if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
+                        cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                        conn.commit()
+                    
+                    # Notify update
+                    self.notify_update()
+                    
+                    return jsonify({
+                        'success': True, 
+                        'team1_score': team1_score, 
+                        'team2_score': team2_score,
+                        'team1_group': team1_group,
+                        'group_changed': group_changed,
+                        'illegal_8ball': True,
+                        'early_8ball_on_break': early_8ball_on_break,
+                        'losing_team': illegal_8ball_losing_team,
+                        'winning_team': winning_team
+                    })
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({
+                    'success': True, 
+                    'team1_score': team1_score, 
+                    'team2_score': team2_score,
+                    'team1_group': team1_group,
+                    'group_changed': group_changed
+                })
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
+        
+        @self.app.route('/api/manager/win-game', methods=['POST'])
+        def win_game():
+            """Mark a game as won (manager mode)."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                winning_team = data.get('winning_team')  # 1 or 2
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Update game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET winner_team = ?
+                    WHERE id = ?
+                ''', (winning_team, current_game['id']))
+                conn.commit()
+                
+                # Check if match is complete
+                games = db.get_games_for_match(match_id)
+                match = db.get_match(match_id)
+                best_of = match.get('best_of', 3)
+                team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
+                team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
+                
+                if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
+                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True})
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
+        
+        @self.app.route('/api/manager/set-group', methods=['POST'])
+        def set_group():
+            """Set the group assignment (solids/stripes) for a game."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                team1_group = data.get('team1_group')  # 'solids' or 'stripes'
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Update game in database
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET team1_group = ?
+                    WHERE id = ?
+                ''', (team1_group, current_game['id']))
+                conn.commit()
+                
+                # Recalculate scores based on new group assignment
+                balls_data = current_game.get('balls_pocketed', {})
+                if isinstance(balls_data, str):
+                    balls = json.loads(balls_data) if balls_data else {}
+                else:
+                    balls = balls_data if balls_data else {}
+                
+                SOLIDS = ['1', '2', '3', '4', '5', '6', '7']
+                STRIPES = ['9', '10', '11', '12', '13', '14', '15']
+                
+                team1_score = 0
+                team2_score = 0
+                
+                for ball, pocketing_team in balls.items():
+                    if ball == '8':
+                        if pocketing_team == 1:
+                            team1_score += 3
+                        elif pocketing_team == 2:
+                            team2_score += 3
+                    elif team1_group == 'solids':
+                        if ball in SOLIDS:
+                            team1_score += 1
+                        elif ball in STRIPES:
+                            team2_score += 1
+                    else:  # team1 has stripes
+                        if ball in STRIPES:
+                            team1_score += 1
+                        elif ball in SOLIDS:
+                            team2_score += 1
+                
+                team1_score = min(team1_score, 10)
+                team2_score = min(team2_score, 10)
+                
+                cursor.execute('''
+                    UPDATE games 
+                    SET team1_score = ?, team2_score = ?
+                    WHERE id = ?
+                ''', (team1_score, team2_score, current_game['id']))
+                conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'team1_group': team1_group})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/set-breaking-team', methods=['POST'])
+        def set_breaking_team():
+            """Set which team is breaking/shooting first."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                breaking_team = data.get('breaking_team')  # 1 or 2
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Update game in database
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET breaking_team = ?
+                    WHERE id = ?
+                ''', (breaking_team, current_game['id']))
+                conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'breaking_team': breaking_team})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/set-golden-break', methods=['POST'])
+        def set_golden_break():
+            """Set golden break status for a game."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                golden_break = data.get('golden_break', False)
+                winning_team = data.get('winning_team', 1)  # Team that got the golden break
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Update game with golden break - this also marks the game as won
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET golden_break = 1, winner_team = ?, team1_score = ?, team2_score = ?
+                    WHERE id = ?
+                ''', (winning_team, 10 if winning_team == 1 else 0, 10 if winning_team == 2 else 0, current_game['id']))
+                conn.commit()
+                
+                # Check if match is complete
+                games = db.get_games_for_match(match_id)
+                match = db.get_match(match_id)
+                best_of = match.get('best_of', 3)
+                team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
+                team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
+                
+                if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
+                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'golden_break': True, 'winning_team': winning_team})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/set-early-8ball', methods=['POST'])
+        def set_early_8ball():
+            """Set early 8-ball (scratch/foul on 8) for a game."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                losing_team = data.get('losing_team')  # Team that scratched on 8
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Determine winning team (opposite of losing team)
+                winning_team = 2 if losing_team == 1 else 1
+                
+                # Update game - early 8ball gives the win to the other team
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET early_8ball_team = ?, winner_team = ?
+                    WHERE id = ?
+                ''', (losing_team, winning_team, current_game['id']))
+                conn.commit()
+                
+                # Check if match is complete
+                games = db.get_games_for_match(match_id)
+                match = db.get_match(match_id)
+                best_of = match.get('best_of', 3)
+                team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
+                team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
+                
+                if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
+                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'winning_team': winning_team})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/reset-table', methods=['POST'])
+        def reset_table():
+            """Reset the table (clear all balls and scores) for a game."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Reset the game - clear balls, scores, and group assignment
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET team1_score = 0, team2_score = 0, balls_pocketed = '{}', 
+                        team1_group = '', winner_team = 0, golden_break = 0, early_8ball_team = NULL
+                    WHERE id = ?
+                ''', (current_game['id'],))
+                conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/available-tables', methods=['GET'])
+        def get_available_tables():
+            """Get list of available tables (not currently running a live match)."""
+            try:
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'error': 'Database connection failed'}), 500
+                
+                league_night = db.get_current_league_night()
+                if not league_night:
+                    return jsonify({'available_tables': [], 'queue': [], 'live_matches': [], 'total_tables': 0})
+                
+                # Get table count
+                num_tables = league_night.get('table_count', 3)
+                
+                # Get tables with live matches
+                try:
+                    live_matches = db.get_live_matches(league_night['id']) or []
+                except Exception as e:
+                    print(f"Error getting live matches: {e}")
+                    live_matches = []
+                    
+                occupied_tables = set(m['table_number'] for m in live_matches if m.get('table_number'))
+                
+                # Find available tables
+                available_tables = [i for i in range(1, num_tables + 1) if i not in occupied_tables]
+                
+                # Get queued matches
+                try:
+                    queued_matches = db.get_queued_matches(league_night['id']) or []
+                except Exception as e:
+                    print(f"Error getting queued matches: {e}")
+                    queued_matches = []
+                queue_data = []
+                for match in queued_matches:
+                    team1 = match.get('team1_p1_name', 'TBD')
+                    if match.get('team1_p2_name'):
+                        team1 += f" & {match['team1_p2_name']}"
+                    team2 = match.get('team2_p1_name', 'TBD')
+                    if match.get('team2_p2_name'):
+                        team2 += f" & {match['team2_p2_name']}"
+                    
+                    queue_data.append({
+                        'id': match['id'],
+                        'team1': team1,
+                        'team2': team2,
+                        'round': match.get('round_number', 1),
+                        'best_of': match.get('best_of', 3),
+                        'is_finals': match.get('is_finals', False)
+                    })
+                
+                # Get live matches for the "Complete Match" feature
+                live_matches_data = []
+                for match in live_matches:
+                    try:
+                        team1 = match.get('team1_p1_name') or 'TBD'
+                        if match.get('team1_p2_name'):
+                            team1 += f" & {match['team1_p2_name']}"
+                        team2 = match.get('team2_p1_name') or 'TBD'
+                        if match.get('team2_p2_name'):
+                            team2 += f" & {match['team2_p2_name']}"
+                        
+                        # Get game scores
+                        try:
+                            games = db.get_games_for_match(match['id']) or []
+                        except Exception:
+                            games = []
+                        team1_games = sum(1 for g in games if g.get('winner_team') == 1)
+                        team2_games = sum(1 for g in games if g.get('winner_team') == 2)
+                        
+                        live_matches_data.append({
+                            'id': match['id'],
+                            'team1': team1,
+                            'team2': team2,
+                            'table': match.get('table_number') or 0,
+                            'team1_games': team1_games,
+                            'team2_games': team2_games,
+                            'is_complete': match.get('is_complete', False)
+                        })
+                    except Exception as e:
+                        print(f"Error processing live match {match.get('id')}: {e}")
+                
+                return jsonify({
+                    'available_tables': available_tables,
+                    'queue': queue_data,
+                    'live_matches': live_matches_data,
+                    'total_tables': num_tables
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/start-match', methods=['POST'])
+        def start_match_on_table():
+            """Start a match from the queue on a specific table."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                table_number = data.get('table_number')
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Get the match
+                match = db.get_match(match_id)
+                if not match:
+                    return jsonify({'success': False, 'error': 'Match not found'})
+                
+                # Check if table is available and players aren't already playing
+                league_night = db.get_current_league_night()
+                if league_night:
+                    live_matches = db.get_live_matches(league_night['id'])
+                    
+                    # Check if the table is already in use
+                    for m in live_matches:
+                        if m.get('table_number') == table_number:
+                            return jsonify({'success': False, 'error': f'Table {table_number} is already in use'})
+                    
+                    # Get all players from the match we want to start
+                    match_players = set()
+                    for player_name in [match.get('team1_p1_name'), match.get('team1_p2_name'),
+                                        match.get('team2_p1_name'), match.get('team2_p2_name')]:
+                        if player_name:
+                            match_players.add(player_name.strip().lower())
+                    
+                    # Check if any of these players are already in an active match
+                    for m in live_matches:
+                        for player_name in [m.get('team1_p1_name'), m.get('team1_p2_name'),
+                                            m.get('team2_p1_name'), m.get('team2_p2_name')]:
+                            if player_name and player_name.strip().lower() in match_players:
+                                # Find the table they're playing on
+                                busy_table = m.get('table_number', 'unknown')
+                                return jsonify({
+                                    'success': False, 
+                                    'error': f'{player_name} is already playing on Table {busy_table}'
+                                })
+                
+                # Start the match on the table
+                db.start_match(match_id, table_number)
+                
+                # Create game 1 for this match
+                try:
+                    db.create_game(match_id, game_number=1, breaking_team=1)
+                except Exception as e:
+                    print(f"Note: Game 1 may already exist: {e}")
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'match_id': match_id, 'table_number': table_number})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        @self.app.route('/api/manager/complete-match', methods=['POST'])
+        def complete_match():
+            """Mark a match as complete and free the table."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                password = data.get('password')
+                
+                # Verify password
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+                
+                stored_password = db.get_setting('manager_password', '')
+                if not stored_password or password != stored_password:
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+                
+                # Get the match
+                match = db.get_match(match_id)
+                if not match:
+                    return jsonify({'success': False, 'error': 'Match not found'})
+                
+                table_number = match.get('table_number')
+                
+                # Mark match as complete
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE matches 
+                    SET is_complete = 1, status = 'completed'
+                    WHERE id = ?
+                ''', (match_id,))
+                conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({'success': True, 'match_id': match_id, 'table_freed': table_number})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+        
+        # New Features API endpoints
+        @self.app.route('/api/achievements/<int:player_id>')
+        def get_player_achievements(player_id):
+            """Get achievements for a player."""
+            try:
+                from achievements import AchievementManager
+                db = self._get_thread_db()
+                mgr = AchievementManager(db)
+                achievements = mgr.get_player_achievements(player_id)
+                return jsonify({
+                    'player_id': player_id,
+                    'achievements': [
+                        {
+                            'id': a['achievement'].id,
+                            'name': a['achievement'].name,
+                            'description': a['achievement'].description,
+                            'icon': a['achievement'].icon,
+                            'tier': a['achievement'].tier,
+                            'unlocked': a['unlocked'],
+                            'progress': a['progress'],
+                            'progress_percent': a['progress_percent']
+                        }
+                        for a in achievements
+                    ]
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)})
+        
+        @self.app.route('/api/stats/player/<int:player_id>')
+        def get_player_stats(player_id):
+            """Get advanced stats for a player."""
+            try:
+                from advanced_stats import AdvancedStatsManager
+                db = self._get_thread_db()
+                mgr = AdvancedStatsManager(db)
+                
+                # Get player
+                player = db.get_player(player_id)
+                if not player:
+                    return jsonify({'error': 'Player not found'})
+                
+                # Get form
+                form = mgr.get_player_form(player_id)
+                
+                # Get streaks
+                streaks = mgr.get_player_streaks(player_id)
+                
+                return jsonify({
+                    'player_id': player_id,
+                    'player_name': player.name,
+                    'form': {
+                        'recent_games': form.recent_games,
+                        'recent_win_rate': form.recent_win_rate,
+                        'trend': form.trend,
+                        'clutch_rating': form.clutch_rating
+                    } if form else None,
+                    'streaks': [
+                        {
+                            'type': s.type,
+                            'length': s.length,
+                            'started_at': s.started_at
+                        }
+                        for s in streaks
+                    ]
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)})
+        
+        @self.app.route('/api/stats/h2h/<int:player1_id>/<int:player2_id>')
+        def get_head_to_head(player1_id, player2_id):
+            """Get head-to-head stats between two players."""
+            try:
+                from advanced_stats import AdvancedStatsManager
+                db = self._get_thread_db()
+                mgr = AdvancedStatsManager(db)
+                h2h = mgr.get_head_to_head(player1_id, player2_id)
+                
+                if not h2h:
+                    return jsonify({'error': 'No head-to-head data found'})
+                
+                return jsonify({
+                    'player1_id': player1_id,
+                    'player2_id': player2_id,
+                    'player1_name': h2h.player1_name,
+                    'player2_name': h2h.player2_name,
+                    'player1_wins': h2h.player1_wins,
+                    'player2_wins': h2h.player2_wins,
+                    'player1_points': h2h.player1_points,
+                    'player2_points': h2h.player2_points
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)})
+        
+        @self.app.route('/api/payments/league-night/<int:league_night_id>')
+        def get_league_night_payments(league_night_id):
+            """Get payment information for a league night."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                
+                payments = venmo_mgr.get_league_night_payments(league_night_id)
+                return jsonify({
+                    'league_night_id': league_night_id,
+                    'payments': [
+                        {
+                            'player_id': p['player_id'],
+                            'player_name': p['player_name'],
+                            'amount': p['amount'],
+                            'paid': p['paid'],
+                            'venmo_confirmed': p['venmo_confirmed']
+                        }
+                        for p in payments
+                    ]
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)})
+        
+        # Spectator Reactions API endpoints
+        @self.app.route('/api/reaction', methods=['POST'])
+        def add_reaction():
+            """Add a spectator reaction."""
+            try:
+                data = request.get_json()
+                reaction_type = data.get('type')
+                sender = data.get('sender', 'Anonymous')
+                client_ip = request.remote_addr
+                
+                reaction = self.reaction_manager.add_reaction(reaction_type, sender, client_ip)
+                
+                if reaction:
+                    return jsonify({
+                        'success': True,
+                        'reaction': {
+                            'id': reaction.id,
+                            'emoji': reaction.emoji,
+                            'text': reaction.text,
+                            'sender': reaction.sender
+                        }
+                    })
+                else:
+                    return jsonify({'success': False, 'error': 'Rate limited or invalid reaction type'})
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+        
+        @self.app.route('/api/reactions')
+        def get_reactions():
+            """Get active reactions."""
+            try:
+                reactions = self.reaction_manager.get_reaction_json()
+                return jsonify({'reactions': reactions})
+            except Exception as e:
+                return jsonify({'error': str(e)})
     
     def _get_scores_data(self) -> dict:
         """Get current scores data from database."""
@@ -175,8 +1316,8 @@ class LiveScoreServer:
             # Get tables data
             tables_data = self._get_tables_data(db, league_night, all_games)
             
-            # Get leaderboard (top 10)
-            leaderboard = db.get_leaderboard_for_season(None, "points")[:10]
+            # Get full leaderboard (all players)
+            leaderboard = db.get_leaderboard_for_season(None, "points")
             leaderboard_data = [
                 {
                     'rank': i + 1,
@@ -192,6 +1333,9 @@ class LiveScoreServer:
                 }
                 for i, entry in enumerate(leaderboard)
             ]
+            
+            # Get active reactions
+            reactions = self.reaction_manager.get_reaction_json()
             
             # Calculate overall league stats
             total_games = sum(p['games'] for p in leaderboard_data)
@@ -227,6 +1371,7 @@ class LiveScoreServer:
                 'leaderboard': leaderboard_data,
                 'league_stats': league_stats,
                 'round_progress': round_progress,
+                'reactions': reactions,
                 'total_live': len(live_matches),
                 'total_completed': len([m for m in matches if m['is_complete']]),
                 'total_queued': len(queue_data)
@@ -242,6 +1387,7 @@ class LiveScoreServer:
                 'leaderboard': [],
                 'league_stats': {},
                 'round_progress': None,
+                'reactions': [],
                 'total_live': 0,
                 'total_completed': 0,
                 'total_queued': 0
@@ -460,1533 +1606,20 @@ class LiveScoreServer:
             
             return {
                 'id': match_id,
-                'team1': team1,
-                'team2': team2,
+                'team1': team1 or 'TBD',
+                'team2': team2 or 'TBD',
                 'team1_games': t1_wins,
                 'team2_games': t2_wins,
-                'best_of': match.get('best_of', 1),
+                'best_of': match.get('best_of') or 1,
                 'is_finals': match.get('is_finals', False),
                 'is_complete': match.get('is_complete', False),
-                'table': match.get('table_number', 0),
+                'table': match.get('table_number') or 0,
                 'games': games_data,
                 'team1_group': current_game_group  # Current/last game's group assignment
             }
         except Exception as e:
             return {'error': str(e)}
-    
-    def _get_html_template(self) -> str:
-        """Get the HTML template for the live scores page."""
-        return '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-capable" content="yes">
-    <title>EcoPOOL Live Scores</title>
-    <style>
-        :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --bg-card: #1a1a2e;
-            --bg-accent: #252540;
-            --text-primary: #ffffff;
-            --text-secondary: #888888;
-            --green: #4CAF50;
-            --green-dark: #2d7a3e;
-            --blue: #2196F3;
-            --gold: #ffd700;
-            --red: #ff6b6b;
-            --orange: #ff9800;
-            --felt-green: #0B6623;
-        }
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-            padding: 10px;
-            padding-bottom: 80px;
-        }
-        
-        .header {
-            text-align: center;
-            padding: 15px 10px;
-            background: linear-gradient(135deg, var(--green-dark), #1a5f2a);
-            border-radius: 15px;
-            margin-bottom: 15px;
-        }
-        
-        .header h1 {
-            font-size: 1.5em;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        
-        .header .subtitle {
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            margin-top: 5px;
-        }
-        
-        .live-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(255,0,0,0.2);
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 0.8em;
-            margin-top: 8px;
-        }
-        
-        .live-dot {
-            width: 8px;
-            height: 8px;
-            background: #ff4444;
-            border-radius: 50%;
-            animation: pulse 1.5s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.2); }
-        }
-        
-        .section {
-            margin-bottom: 20px;
-        }
-        
-        .section-title {
-            font-size: 1.1em;
-            color: var(--text-secondary);
-            padding: 8px 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .match-card {
-            background: var(--bg-card);
-            border-radius: 12px;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-left: 4px solid var(--green);
-        }
-        
-        .match-card.completed {
-            border-left-color: var(--text-secondary);
-            opacity: 0.8;
-        }
-        
-        .match-card.finals {
-            border-left-color: var(--gold);
-            background: linear-gradient(135deg, var(--bg-card), #2a2a3a);
-        }
-        
-        .match-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.75em;
-            color: var(--text-secondary);
-            margin-bottom: 10px;
-        }
-        
-        .table-badge {
-            background: var(--bg-accent);
-            padding: 3px 10px;
-            border-radius: 10px;
-        }
-        
-        .teams-container {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        
-        .team {
-            flex: 1;
-            text-align: center;
-        }
-        
-        .team-name {
-            font-size: 0.9em;
-            font-weight: 600;
-            margin-bottom: 8px;
-            line-height: 1.3;
-        }
-        
-        .score-box {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        
-        .game-score {
-            font-size: 2em;
-            font-weight: bold;
-            color: var(--green);
-        }
-        
-        .team:last-child .game-score {
-            color: var(--blue);
-        }
-        
-        .points-score {
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            margin-top: 2px;
-        }
-        
-        .vs-divider {
-            padding: 0 10px;
-            color: var(--orange);
-            font-weight: bold;
-            font-size: 0.9em;
-        }
-        
-        /* Tables Grid */
-        .tables-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            margin-bottom: 15px;
-        }
-        
-        .table-card {
-            background: var(--bg-card);
-            border-radius: 12px;
-            padding: 12px;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            border: 2px solid transparent;
-        }
-        
-        .table-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        }
-        
-        .table-card.live {
-            border-color: var(--green);
-            background: linear-gradient(135deg, #1e4a1e, var(--bg-card));
-        }
-        
-        .table-card.available {
-            border-color: var(--bg-accent);
-            opacity: 0.6;
-        }
-        
-        .table-card .table-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .table-card .table-number {
-            font-weight: bold;
-            font-size: 1.1em;
-        }
-        
-        .table-card .table-status {
-            font-size: 0.7em;
-            padding: 2px 6px;
-            border-radius: 8px;
-            background: var(--green);
-            color: white;
-        }
-        
-        .table-card.available .table-status {
-            background: var(--bg-accent);
-            color: var(--text-secondary);
-        }
-        
-        .table-visual {
-            background: var(--felt-green);
-            border-radius: 8px;
-            padding: 10px;
-            margin: 8px 0;
-            min-height: 60px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            border: 3px solid #5D3A1A;
-        }
-        
-        .table-visual .match-score {
-            font-size: 1.5em;
-            font-weight: bold;
-            color: white;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-        }
-        
-        .table-visual .match-teams {
-            font-size: 0.7em;
-            color: rgba(255,255,255,0.9);
-            text-align: center;
-            margin-top: 4px;
-        }
-        
-        .table-visual .match-points {
-            font-size: 0.75em;
-            color: rgba(255,255,255,0.7);
-            margin-top: 2px;
-        }
-        
-        .table-visual.empty {
-            color: rgba(255,255,255,0.4);
-            font-size: 0.8em;
-        }
-        
-        .table-teams {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            margin: 8px 0;
-            gap: 2px;
-        }
-        
-        .table-team {
-            font-size: 0.8em;
-            font-weight: 500;
-            line-height: 1.2;
-        }
-        
-        .table-team.team1 {
-            color: var(--green);
-        }
-        
-        .table-team.team2 {
-            color: var(--blue);
-        }
-        
-        .table-vs {
-            font-size: 0.65em;
-            color: var(--text-secondary);
-        }
-        
-        .table-waiting {
-            text-align: center;
-            font-size: 0.75em;
-            color: var(--text-secondary);
-            margin: 8px 0;
-        }
-        
-        .table-tap-hint {
-            text-align: center;
-            font-size: 0.7em;
-            color: var(--text-secondary);
-            opacity: 0.7;
-        }
-        
-        .group-badge {
-            display: inline-block;
-            font-size: 0.65em;
-            padding: 2px 5px;
-            border-radius: 4px;
-            margin-left: 4px;
-            vertical-align: middle;
-        }
-        
-        .group-badge.solids {
-            background: rgba(0, 0, 0, 0.4);
-            color: #FFD700;
-        }
-        
-        .group-badge.stripes {
-            background: rgba(255, 255, 255, 0.15);
-            color: #87CEEB;
-        }
-        
-        /* Queue Section */
-        .queue-list {
-            background: var(--bg-card);
-            border-radius: 12px;
-            overflow: hidden;
-        }
-        
-        .queue-header {
-            background: #3d3a1e;
-            padding: 10px 15px;
-            font-weight: bold;
-            color: var(--gold);
-            display: flex;
-            justify-content: space-between;
-        }
-        
-        .queue-item {
-            display: flex;
-            align-items: center;
-            padding: 10px 15px;
-            border-bottom: 1px solid var(--bg-accent);
-        }
-        
-        .queue-item:last-child {
-            border-bottom: none;
-        }
-        
-        .queue-position {
-            width: 30px;
-            font-weight: bold;
-            color: var(--gold);
-        }
-        
-        .queue-teams {
-            flex: 1;
-            font-size: 0.9em;
-        }
-        
-        .queue-round {
-            font-size: 0.75em;
-            color: var(--text-secondary);
-            background: var(--bg-accent);
-            padding: 2px 8px;
-            border-radius: 8px;
-        }
-        
-        .leaderboard {
-            background: var(--bg-card);
-            border-radius: 12px;
-            overflow: hidden;
-        }
-        
-        .leaderboard-header {
-            background: var(--green-dark);
-            padding: 10px 15px;
-            font-weight: bold;
-            display: flex;
-            justify-content: space-between;
-        }
-        
-        .leaderboard-row {
-            display: flex;
-            flex-direction: column;
-            padding: 12px 15px;
-            border-bottom: 1px solid var(--bg-accent);
-        }
-        
-        .leaderboard-row:last-child {
-            border-bottom: none;
-        }
-        
-        .leaderboard-row.top-3 {
-            background: linear-gradient(90deg, rgba(255,215,0,0.1), transparent);
-        }
-        
-        .player-main {
-            display: flex;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .rank {
-            width: 35px;
-            font-weight: bold;
-            color: var(--gold);
-        }
-        
-        .player-avatar {
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 0.85em;
-            color: white;
-            margin-right: 10px;
-            flex-shrink: 0;
-            text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
-            object-fit: cover;
-        }
-        
-        img.player-avatar {
-            display: inline-block;
-            border: 2px solid var(--bg-accent);
-        }
-        
-        .player-avatar.emoji {
-            font-size: 1.2em;
-            background: linear-gradient(135deg, #3d5a80, #2d4a70);
-        }
-        
-        .player-name {
-            flex: 1;
-            font-weight: 500;
-        }
-        
-        .points-badge {
-            background: var(--green-dark);
-            color: var(--gold);
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-weight: bold;
-            font-size: 0.9em;
-        }
-        
-        .player-stats {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            padding-left: 81px; /* rank (35px) + avatar (36px) + margin (10px) */
-            font-size: 0.8em;
-        }
-        
-        .stat {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            background: var(--bg-accent);
-            padding: 3px 8px;
-            border-radius: 8px;
-        }
-        
-        .stat-value {
-            font-weight: bold;
-        }
-        
-        .stat-value.wins {
-            color: var(--green);
-        }
-        
-        .stat-value.losses {
-            color: var(--red);
-        }
-        
-        .stat-value.golden {
-            color: var(--gold);
-        }
-        
-        .stat-label {
-            color: var(--text-secondary);
-        }
-        
-        .win-rate-bar {
-            width: 50px;
-            height: 4px;
-            background: var(--bg-primary);
-            border-radius: 2px;
-            overflow: hidden;
-            margin-left: 4px;
-        }
-        
-        .win-rate-fill {
-            height: 100%;
-            border-radius: 2px;
-            transition: width 0.3s ease;
-        }
-        
-        .empty-state {
-            text-align: center;
-            padding: 30px;
-            color: var(--text-secondary);
-        }
-        
-        .empty-state .emoji {
-            font-size: 2em;
-            margin-bottom: 10px;
-        }
-        
-        /* Round Progress */
-        .round-progress-card {
-            background: linear-gradient(135deg, #2d4a70, #1a3050);
-            border-radius: 12px;
-            padding: 15px 20px;
-            margin-bottom: 10px;
-        }
-        
-        .round-info {
-            display: flex;
-            align-items: baseline;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
-        
-        .round-number {
-            font-size: 1.4em;
-            font-weight: bold;
-            color: var(--gold);
-        }
-        
-        .round-of {
-            font-size: 0.9em;
-            color: var(--text-secondary);
-        }
-        
-        .round-stats {
-            display: flex;
-            gap: 10px;
-            font-size: 0.85em;
-            margin-bottom: 10px;
-        }
-        
-        .round-live {
-            color: var(--green);
-            font-weight: 500;
-        }
-        
-        .round-sep {
-            color: var(--text-secondary);
-        }
-        
-        .round-done {
-            color: var(--text-secondary);
-        }
-        
-        .round-progress-bar {
-            height: 6px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-        
-        .round-progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--green), var(--gold));
-            border-radius: 3px;
-            transition: width 0.5s ease;
-        }
-        
-        .league-stats {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        
-        .stat-card {
-            background: var(--bg-card);
-            border-radius: 10px;
-            padding: 12px;
-            text-align: center;
-        }
-        
-        .stat-card.highlight {
-            background: linear-gradient(135deg, var(--green-dark), #1a5f2a);
-        }
-        
-        .stat-card .stat-icon {
-            font-size: 1.2em;
-            margin-bottom: 4px;
-        }
-        
-        .stat-card .stat-number {
-            font-size: 1.4em;
-            font-weight: bold;
-            color: var(--gold);
-        }
-        
-        .stat-card .stat-desc {
-            font-size: 0.75em;
-            color: var(--text-secondary);
-            margin-top: 2px;
-        }
-        
-        .stat-card .stat-player {
-            font-size: 0.85em;
-            color: var(--text-primary);
-            margin-top: 4px;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-        }
-        
-        .stat-card .mini-avatar {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.7em;
-            font-weight: bold;
-            color: white;
-            flex-shrink: 0;
-            object-fit: cover;
-        }
-        
-        .stat-card img.mini-avatar {
-            display: inline-block;
-            border: 1px solid var(--bg-accent);
-        }
-        
-        .stat-card .mini-avatar.emoji {
-            font-size: 0.9em;
-            background: linear-gradient(135deg, #3d5a80, #2d4a70);
-        }
-        
-        .update-time {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: var(--bg-secondary);
-            padding: 12px;
-            text-align: center;
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            border-top: 1px solid var(--bg-accent);
-            z-index: 100;
-        }
-        
-        .connection-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            margin-left: 10px;
-        }
-        
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--green);
-        }
-        
-        .status-dot.disconnected {
-            background: var(--red);
-        }
-        
-        /* Modal Styles */
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.85);
-            z-index: 1000;
-            overflow-y: auto;
-            padding: 20px;
-        }
-        
-        .modal-overlay.active {
-            display: block;
-        }
-        
-        .modal-content {
-            background: var(--bg-secondary);
-            border-radius: 15px;
-            max-width: 500px;
-            margin: 0 auto;
-            padding: 20px;
-            position: relative;
-        }
-        
-        .modal-close {
-            position: absolute;
-            top: 10px;
-            right: 15px;
-            font-size: 1.5em;
-            cursor: pointer;
-            color: var(--text-secondary);
-        }
-        
-        .modal-header {
-            text-align: center;
-            margin-bottom: 15px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid var(--bg-accent);
-        }
-        
-        .modal-header h2 {
-            font-size: 1.3em;
-            margin-bottom: 5px;
-        }
-        
-        .modal-header .table-info {
-            color: var(--text-secondary);
-            font-size: 0.9em;
-        }
-        
-        .scorecard-teams {
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 20px;
-        }
-        
-        .scorecard-team {
-            text-align: center;
-        }
-        
-        .scorecard-team-name {
-            font-weight: 600;
-            margin-bottom: 5px;
-            color: var(--green);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        .scorecard-team:last-child .scorecard-team-name {
-            color: var(--blue);
-        }
-        
-        .scorecard-team-name .group-badge {
-            font-size: 0.7em;
-            margin-left: 0;
-        }
-        
-        .scorecard-team-score {
-            font-size: 2.5em;
-            font-weight: bold;
-        }
-        
-        .scorecard-team:first-child .scorecard-team-score {
-            color: var(--green);
-        }
-        
-        .scorecard-team:last-child .scorecard-team-score {
-            color: var(--blue);
-        }
-        
-        .scorecard-game {
-            background: var(--bg-card);
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 10px;
-        }
-        
-        .scorecard-game-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 10px;
-            font-size: 0.85em;
-            color: var(--text-secondary);
-        }
-        
-        .scorecard-game-scores {
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 10px;
-        }
-        
-        .scorecard-game-score {
-            font-size: 1.5em;
-            font-weight: bold;
-        }
-        
-        .balls-display {
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid var(--bg-accent);
-        }
-        
-        .balls-row {
-            display: flex;
-            align-items: center;
-            margin-bottom: 8px;
-            gap: 8px;
-        }
-        
-        .balls-label {
-            font-size: 0.75em;
-            color: var(--text-secondary);
-            width: 60px;
-        }
-        
-        .balls-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-        }
-        
-        .ball {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.65em;
-            font-weight: bold;
-            color: white;
-            text-shadow: 1px 1px 1px rgba(0,0,0,0.5);
-        }
-        
-        .ball.solid-1 { background: #FFD700; color: black; }
-        .ball.solid-2 { background: #0066CC; }
-        .ball.solid-3 { background: #CC0000; }
-        .ball.solid-4 { background: #6B2D8B; }
-        .ball.solid-5 { background: #FF6600; }
-        .ball.solid-6 { background: #006633; }
-        .ball.solid-7 { background: #8B0000; }
-        .ball.solid-8 { background: #000000; }
-        .ball.stripe-9 { background: linear-gradient(90deg, white 30%, #FFD700 30%, #FFD700 70%, white 70%); color: black; }
-        .ball.stripe-10 { background: linear-gradient(90deg, white 30%, #0066CC 30%, #0066CC 70%, white 70%); color: black; }
-        .ball.stripe-11 { background: linear-gradient(90deg, white 30%, #CC0000 30%, #CC0000 70%, white 70%); color: black; }
-        .ball.stripe-12 { background: linear-gradient(90deg, white 30%, #6B2D8B 30%, #6B2D8B 70%, white 70%); color: black; }
-        .ball.stripe-13 { background: linear-gradient(90deg, white 30%, #FF6600 30%, #FF6600 70%, white 70%); color: black; }
-        .ball.stripe-14 { background: linear-gradient(90deg, white 30%, #006633 30%, #006633 70%, white 70%); color: black; }
-        .ball.stripe-15 { background: linear-gradient(90deg, white 30%, #8B0000 30%, #8B0000 70%, white 70%); color: black; }
-        
-        .golden-badge {
-            background: var(--gold);
-            color: black;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 0.75em;
-            font-weight: bold;
-        }
-        
-        .winner-badge {
-            color: var(--gold);
-        }
-        
-        @media (min-width: 768px) {
-            body {
-                max-width: 800px;
-                margin: 0 auto;
-                padding: 20px;
-            }
-            
-            .header h1 {
-                font-size: 2em;
-            }
-            
-            .match-card {
-                padding: 20px;
-            }
-            
-            .team-name {
-                font-size: 1.1em;
-            }
-            
-            .game-score {
-                font-size: 2.5em;
-            }
-            
-            .tables-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🎱 EcoPOOL Live Scores</h1>
-        <div class="subtitle">WVU EcoCAR Pool League</div>
-        <div class="live-indicator">
-            <span class="live-dot"></span>
-            <span>LIVE</span>
-        </div>
-    </div>
-    
-    <div id="content">
-        <div class="empty-state">
-            <div class="emoji">⏳</div>
-            <div>Loading scores...</div>
-        </div>
-    </div>
-    
-    <div class="update-time">
-        Last updated: <span id="update-time">--:--:-- --</span>
-        <span class="connection-status">
-            <span class="status-dot" id="status-dot"></span>
-            <span id="status-text">Connecting...</span>
-        </span>
-    </div>
-    
-    <!-- Scorecard Modal -->
-    <div class="modal-overlay" id="scorecard-modal">
-        <div class="modal-content">
-            <span class="modal-close" onclick="closeModal()">&times;</span>
-            <div id="scorecard-content">
-                <div class="empty-state">Loading...</div>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        let eventSource = null;
-        let reconnectAttempts = 0;
-        const maxReconnectAttempts = 10;
-        
-        const BALL_COLORS = {
-            1: 'solid-1', 2: 'solid-2', 3: 'solid-3', 4: 'solid-4',
-            5: 'solid-5', 6: 'solid-6', 7: 'solid-7', 8: 'solid-8',
-            9: 'stripe-9', 10: 'stripe-10', 11: 'stripe-11', 12: 'stripe-12',
-            13: 'stripe-13', 14: 'stripe-14', 15: 'stripe-15'
-        };
-        
-        // Avatar colors matching the desktop app
-        const AVATAR_COLORS = [
-            ["#FF6B6B", "#C62828"], ["#4ECDC4", "#00897B"], ["#45B7D1", "#0277BD"],
-            ["#96CEB4", "#388E3C"], ["#FFEAA7", "#F9A825"], ["#DDA0DD", "#7B1FA2"],
-            ["#F8B500", "#E65100"], ["#85C1E9", "#1565C0"], ["#BB8FCE", "#6A1B9A"],
-            ["#98D8C8", "#00695C"], ["#F7DC6F", "#FBC02D"], ["#FF69B4", "#C2185B"]
-        ];
-        
-        function getAvatarColorForName(name) {
-            // Simple hash to get consistent color for a name
-            let hash = 0;
-            for (let i = 0; i < name.length; i++) {
-                hash = name.charCodeAt(i) + ((hash << 5) - hash);
-            }
-            return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-        }
-        
-        function getInitials(name) {
-            if (!name) return '?';
-            const parts = name.trim().split(' ');
-            if (parts.length >= 2) {
-                return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-            } else if (parts[0].length >= 2) {
-                return parts[0].substring(0, 2).toUpperCase();
-            }
-            return parts[0][0].toUpperCase();
-        }
-        
-        function getProfilePictureUrl(profilePicture) {
-            // Extract filename from a file path and return the API URL
-            if (!profilePicture) return null;
-            // Handle Windows and Unix paths
-            const parts = profilePicture.replace(/\\\\/g, '/').split('/');
-            const filename = parts[parts.length - 1];
-            return `/api/pfp/${encodeURIComponent(filename)}`;
-        }
-        
-        function isFilePath(profilePicture) {
-            // Check if this is an actual file path (not emoji: or color: prefix)
-            if (!profilePicture) return false;
-            if (profilePicture.startsWith('emoji:')) return false;
-            if (profilePicture.startsWith('color:')) return false;
-            // If it contains path separators or file extensions, it's likely a file
-            return profilePicture.includes('/') || profilePicture.includes('\\\\') || 
-                   profilePicture.match(/\\.(jpg|jpeg|png|gif)$/i);
-        }
-        
-        function createAvatar(name, profilePicture) {
-            // Check if it's an actual image file
-            if (isFilePath(profilePicture)) {
-                const url = getProfilePictureUrl(profilePicture);
-                return `<img class="player-avatar" src="${url}" alt="${escapeHtml(name)}" onerror="this.outerHTML=createAvatarFallback('${escapeHtml(name)}', false)">`;
-            }
-            
-            // Check if it's an emoji avatar
-            if (profilePicture && profilePicture.startsWith('emoji:')) {
-                const emoji = profilePicture.substring(6);
-                return `<div class="player-avatar emoji">${emoji}</div>`;
-            }
-            
-            // Generate initials-based avatar
-            return createAvatarFallback(name, false);
-        }
-        
-        function createAvatarFallback(name, isMini) {
-            const colors = getAvatarColorForName(name);
-            const initials = getInitials(name);
-            const className = isMini ? 'mini-avatar' : 'player-avatar';
-            return `<div class="${className}" style="background: linear-gradient(135deg, ${colors[0]}, ${colors[1]})">${initials}</div>`;
-        }
-        
-        function createMiniAvatar(name, profilePicture) {
-            // Check if it's an actual image file
-            if (isFilePath(profilePicture)) {
-                const url = getProfilePictureUrl(profilePicture);
-                return `<img class="mini-avatar" src="${url}" alt="${escapeHtml(name)}" onerror="this.outerHTML=createAvatarFallback('${escapeHtml(name)}', true)">`;
-            }
-            
-            // Smaller version for stat cards
-            if (profilePicture && profilePicture.startsWith('emoji:')) {
-                const emoji = profilePicture.substring(6);
-                return `<div class="mini-avatar emoji">${emoji}</div>`;
-            }
-            
-            return createAvatarFallback(name, true);
-        }
-        
-        function connectSSE() {
-            if (eventSource) {
-                eventSource.close();
-            }
-            
-            eventSource = new EventSource('/api/stream');
-            
-            eventSource.onopen = function() {
-                console.log('Connected to live updates');
-                reconnectAttempts = 0;
-                updateConnectionStatus(true);
-            };
-            
-            eventSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                updateUI(data);
-            };
-            
-            eventSource.onerror = function() {
-                console.log('SSE connection error');
-                updateConnectionStatus(false);
-                
-                eventSource.close();
-                
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    setTimeout(connectSSE, 3000);
-                }
-            };
-        }
-        
-        function updateConnectionStatus(connected) {
-            const dot = document.getElementById('status-dot');
-            const text = document.getElementById('status-text');
-            
-            if (connected) {
-                dot.classList.remove('disconnected');
-                text.textContent = 'Connected';
-            } else {
-                dot.classList.add('disconnected');
-                text.textContent = 'Reconnecting...';
-            }
-        }
-        
-        function updateUI(data) {
-            document.getElementById('update-time').textContent = data.timestamp;
-            
-            let html = '';
-            
-            // Round Progress Section (if rounds exist)
-            if (data.round_progress && data.round_progress.total_rounds > 0) {
-                const rp = data.round_progress;
-                const progressPercent = rp.total > 0 ? Math.round((rp.completed / rp.total) * 100) : 0;
-                html += `
-                    <div class="section">
-                        <div class="round-progress-card">
-                            <div class="round-info">
-                                <span class="round-number">Round ${rp.current_round}</span>
-                                <span class="round-of">of ${rp.total_rounds}</span>
-                            </div>
-                            <div class="round-stats">
-                                <span class="round-live">${rp.live} live</span>
-                                <span class="round-sep">•</span>
-                                <span class="round-done">${rp.completed}/${rp.total} done</span>
-                            </div>
-                            <div class="round-progress-bar">
-                                <div class="round-progress-fill" style="width: ${progressPercent}%"></div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Tables Section (Visual Overview) - Main focus
-            if (data.tables && data.tables.length > 0) {
-                const liveTables = data.tables.filter(t => t.status === 'live').length;
-                const availableTables = data.tables.length - liveTables;
-                html += `
-                    <div class="section">
-                        <div class="section-title">🎱 Pool Hall <span style="font-weight:normal;font-size:0.85em;color:var(--text-secondary)">(${liveTables} active, ${availableTables} open)</span></div>
-                        <div class="tables-grid">
-                            ${data.tables.map(t => createTableCard(t)).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Queue Section - Up Next
-            if (data.queue && data.queue.length > 0) {
-                html += `
-                    <div class="section">
-                        <div class="section-title">⏳ Up Next</div>
-                        <div class="queue-list">
-                            <div class="queue-header">
-                                <span>Queue</span>
-                                <span>${data.queue.length} waiting</span>
-                            </div>
-                            ${data.queue.slice(0, 5).map(q => createQueueItem(q)).join('')}
-                            ${data.queue.length > 5 ? `<div class="queue-item" style="justify-content:center;color:var(--text-secondary);">+ ${data.queue.length - 5} more</div>` : ''}
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Completed matches section
-            if (data.completed_matches && data.completed_matches.length > 0) {
-                html += `
-                    <div class="section">
-                        <div class="section-title">✅ Recent Results</div>
-                        ${data.completed_matches.map(m => createMatchCard(m, true)).join('')}
-                    </div>
-                `;
-            }
-            
-            // League Stats section
-            if (data.league_stats && data.league_stats.total_games > 0) {
-                const ls = data.league_stats;
-                html += `
-                    <div class="section">
-                        <div class="section-title">📈 League Stats</div>
-                        <div class="league-stats">
-                            <div class="stat-card highlight">
-                                <div class="stat-icon">🎱</div>
-                                <div class="stat-number">${ls.total_games}</div>
-                                <div class="stat-desc">Games Played</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-icon">⭐</div>
-                                <div class="stat-number">${ls.total_golden}</div>
-                                <div class="stat-desc">Golden Breaks</div>
-                            </div>
-                            ${ls.top_scorer ? `
-                            <div class="stat-card">
-                                <div class="stat-icon">👑</div>
-                                <div class="stat-number">${ls.top_scorer_pts}</div>
-                                <div class="stat-desc">Top Scorer</div>
-                                <div class="stat-player">${createMiniAvatar(ls.top_scorer, ls.top_scorer_pfp)} ${escapeHtml(ls.top_scorer)}</div>
-                            </div>
-                            ` : ''}
-                            ${ls.best_win_rate ? `
-                            <div class="stat-card">
-                                <div class="stat-icon">🎯</div>
-                                <div class="stat-number">${ls.best_win_rate_pct}%</div>
-                                <div class="stat-desc">Best Win Rate</div>
-                                <div class="stat-player">${createMiniAvatar(ls.best_win_rate, ls.best_win_rate_pfp)} ${escapeHtml(ls.best_win_rate)}</div>
-                            </div>
-                            ` : ''}
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Leaderboard section
-            if (data.leaderboard && data.leaderboard.length > 0) {
-                html += `
-                    <div class="section">
-                        <div class="section-title">🏆 Leaderboard</div>
-                        <div class="leaderboard">
-                            ${data.leaderboard.map((p, i) => createLeaderboardRow(p, i)).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-            
-            // Empty state
-            if (!data.tables?.some(t => t.status === 'live') && !data.queue?.length && !data.completed_matches?.length) {
-                html = `
-                    <div class="empty-state">
-                        <div class="emoji">🎱</div>
-                        <div>No matches yet tonight</div>
-                        <div style="margin-top: 10px; font-size: 0.9em;">
-                            Matches will appear here when they start
-                        </div>
-                    </div>
-                `;
-            }
-            
-            document.getElementById('content').innerHTML = html;
-        }
-        
-        function createTableCard(table) {
-            const statusClass = table.status === 'live' ? 'live' : 'available';
-            const statusText = table.status === 'live' ? 'LIVE' : 'Open';
-            const clickHandler = table.match_id ? `onclick="openScorecard(${table.match_id})"` : '';
-            
-            let visualContent = '';
-            let teamsContent = '';
-            
-            if (table.status === 'live') {
-                // Show large score on the table visual
-                visualContent = `
-                    <div class="match-score">${table.team1_games} - ${table.team2_games}</div>
-                    <div class="match-points">${table.team1_points} - ${table.team2_points} pts</div>
-                `;
-                
-                // Team names are already first names from server
-                const team1Display = escapeHtml(table.team1);
-                const team2Display = escapeHtml(table.team2);
-                
-                // Determine group labels (solids/stripes)
-                let team1GroupLabel = '';
-                let team2GroupLabel = '';
-                if (table.team1_group === 'solids') {
-                    team1GroupLabel = '<span class="group-badge solids">⚫ Solids</span>';
-                    team2GroupLabel = '<span class="group-badge stripes">⬜ Stripes</span>';
-                } else if (table.team1_group === 'stripes') {
-                    team1GroupLabel = '<span class="group-badge stripes">⬜ Stripes</span>';
-                    team2GroupLabel = '<span class="group-badge solids">⚫ Solids</span>';
-                }
-                
-                teamsContent = `
-                    <div class="table-teams">
-                        <div class="table-team team1">${team1Display} ${team1GroupLabel}</div>
-                        <div class="table-vs">vs</div>
-                        <div class="table-team team2">${team2Display} ${team2GroupLabel}</div>
-                    </div>
-                `;
-            } else {
-                visualContent = `<div class="empty">Ready</div>`;
-                teamsContent = `<div class="table-waiting">Waiting for game</div>`;
-            }
-            
-            return `
-                <div class="table-card ${statusClass}" ${clickHandler}>
-                    <div class="table-header">
-                        <span class="table-number">Table ${table.table_number}</span>
-                        <span class="table-status">${statusText}</span>
-                    </div>
-                    <div class="table-visual ${table.status === 'available' ? 'empty' : ''}">
-                        ${visualContent}
-                    </div>
-                    ${teamsContent}
-                    ${table.status === 'live' ? `<div class="table-tap-hint">Tap for scorecard</div>` : ''}
-                </div>
-            `;
-        }
-        
-        function createQueueItem(item) {
-            return `
-                <div class="queue-item">
-                    <span class="queue-position">#${item.position}</span>
-                    <span class="queue-teams">${escapeHtml(item.team1)} vs ${escapeHtml(item.team2)}</span>
-                    ${item.round > 1 ? `<span class="queue-round">R${item.round}</span>` : ''}
-                </div>
-            `;
-        }
-        
-        function createMatchCard(match, completed) {
-            const finals = match.is_finals ? 'finals' : '';
-            const completedClass = completed ? 'completed' : '';
-            const clickHandler = `onclick="openScorecard(${match.id})"`;
-            
-            return `
-                <div class="match-card ${finals} ${completedClass}" ${clickHandler} style="cursor:pointer">
-                    <div class="match-header">
-                        <span>${match.is_finals ? '🏆 Finals' : 'Best of ' + match.best_of}</span>
-                        <span class="table-badge">Table ${match.table}</span>
-                    </div>
-                    <div class="teams-container">
-                        <div class="team">
-                            <div class="team-name">${escapeHtml(match.team1)}</div>
-                            <div class="score-box">
-                                <div class="game-score">${match.team1_games}</div>
-                                <div class="points-score">${match.team1_points} pts</div>
-                            </div>
-                        </div>
-                        <div class="vs-divider">VS</div>
-                        <div class="team">
-                            <div class="team-name">${escapeHtml(match.team2)}</div>
-                            <div class="score-box">
-                                <div class="game-score">${match.team2_games}</div>
-                                <div class="points-score">${match.team2_points} pts</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-        
-        function createLeaderboardRow(player, index) {
-            const isTop3 = index < 3 ? 'top-3' : '';
-            const rankDisplay = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : (index + 1);
-            const winRateColor = player.win_rate >= 50 ? 'var(--green)' : 'var(--red)';
-            const goldenBreaks = player.golden_breaks || 0;
-            const avatar = createAvatar(player.name, player.profile_picture);
-            
-            return `
-                <div class="leaderboard-row ${isTop3}">
-                    <div class="player-main">
-                        <div class="rank">${rankDisplay}</div>
-                        ${avatar}
-                        <div class="player-name">${escapeHtml(player.name)}</div>
-                        <div class="points-badge">${player.points} pts</div>
-                    </div>
-                    <div class="player-stats">
-                        <div class="stat">
-                            <span class="stat-value wins">${player.wins}W</span>
-                            <span class="stat-label">-</span>
-                            <span class="stat-value losses">${player.losses || 0}L</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Games:</span>
-                            <span class="stat-value">${player.games}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Win%:</span>
-                            <span class="stat-value" style="color: ${winRateColor}">${player.win_rate}%</span>
-                            <div class="win-rate-bar">
-                                <div class="win-rate-fill" style="width: ${player.win_rate}%; background: ${winRateColor}"></div>
-                            </div>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Avg:</span>
-                            <span class="stat-value" style="color: var(--blue)">${player.avg_points || 0}</span>
-                        </div>
-                        ${goldenBreaks > 0 ? `
-                        <div class="stat">
-                            <span class="stat-value golden">⭐ ${goldenBreaks}</span>
-                            <span class="stat-label">golden</span>
-                        </div>
-                        ` : ''}
-                    </div>
-                </div>
-            `;
-        }
-        
-        function openScorecard(matchId) {
-            const modal = document.getElementById('scorecard-modal');
-            const content = document.getElementById('scorecard-content');
-            
-            content.innerHTML = '<div class="empty-state">Loading...</div>';
-            modal.classList.add('active');
-            
-            fetch(`/api/match/${matchId}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) {
-                        content.innerHTML = `<div class="empty-state">${data.error}</div>`;
-                        return;
-                    }
-                    content.innerHTML = renderScorecard(data);
-                })
-                .catch(err => {
-                    content.innerHTML = `<div class="empty-state">Failed to load</div>`;
-                });
-        }
-        
-        function renderScorecard(match) {
-            const statusText = match.is_complete ? 'Complete' : 'In Progress';
-            
-            // Determine group labels for team headers
-            let team1GroupBadge = '';
-            let team2GroupBadge = '';
-            if (match.team1_group === 'solids') {
-                team1GroupBadge = '<span class="group-badge solids">⚫ Solids</span>';
-                team2GroupBadge = '<span class="group-badge stripes">⬜ Stripes</span>';
-            } else if (match.team1_group === 'stripes') {
-                team1GroupBadge = '<span class="group-badge stripes">⬜ Stripes</span>';
-                team2GroupBadge = '<span class="group-badge solids">⚫ Solids</span>';
-            }
-            
-            let gamesHtml = '';
-            if (match.games && match.games.length > 0) {
-                gamesHtml = match.games.map(g => {
-                    const winnerIcon = g.winner_team === 1 ? '<span class="winner-badge">🏆</span>' : '';
-                    const winnerIcon2 = g.winner_team === 2 ? '<span class="winner-badge">🏆</span>' : '';
-                    const goldenBadge = g.golden_break ? '<span class="golden-badge">⭐ Golden Break</span>' : '';
-                    
-                    // Render balls pocketed
-                    let ballsHtml = '';
-                    if (g.balls_pocketed && Object.keys(g.balls_pocketed).length > 0) {
-                        const allBalls = Object.keys(g.balls_pocketed).map(Number).sort((a,b) => a-b);
-                        
-                        ballsHtml = `
-                            <div class="balls-display">
-                                <div class="balls-row">
-                                    <span class="balls-label">Balls Out:</span>
-                                    <div class="balls-container">
-                                        ${allBalls.map(b => `<div class="ball ${BALL_COLORS[b]}">${b}</div>`).join('')}
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }
-                    
-                    return `
-                        <div class="scorecard-game">
-                            <div class="scorecard-game-header">
-                                <span>Game ${g.game_number}</span>
-                                <span>${g.team1_group ? (g.team1_group === 'solids' ? 'T1: Solids' : 'T1: Stripes') : ''}</span>
-                                ${goldenBadge}
-                            </div>
-                            <div class="scorecard-game-scores">
-                                <span class="scorecard-game-score" style="color:var(--green)">${g.team1_score} ${winnerIcon}</span>
-                                <span style="color:var(--text-secondary)">-</span>
-                                <span class="scorecard-game-score" style="color:var(--blue)">${winnerIcon2} ${g.team2_score}</span>
-                            </div>
-                            ${ballsHtml}
-                        </div>
-                    `;
-                }).join('');
-            } else {
-                gamesHtml = '<div class="empty-state" style="padding:15px">No games recorded yet</div>';
-            }
-            
-            return `
-                <div class="modal-header">
-                    <h2>${match.is_finals ? '🏆 Finals' : 'Match'}</h2>
-                    <div class="table-info">Table ${match.table} • ${statusText}</div>
-                </div>
-                
-                <div class="scorecard-teams">
-                    <div class="scorecard-team">
-                        <div class="scorecard-team-name">${escapeHtml(match.team1)} ${team1GroupBadge}</div>
-                        <div class="scorecard-team-score">${match.team1_games}</div>
-                    </div>
-                    <div style="color:var(--text-secondary);padding:20px">vs</div>
-                    <div class="scorecard-team">
-                        <div class="scorecard-team-name">${escapeHtml(match.team2)} ${team2GroupBadge}</div>
-                        <div class="scorecard-team-score">${match.team2_games}</div>
-                    </div>
-                </div>
-                
-                <div style="margin-bottom:10px;color:var(--text-secondary);font-size:0.85em;text-align:center">
-                    Best of ${match.best_of}
-                </div>
-                
-                ${gamesHtml}
-            `;
-        }
-        
-        function closeModal() {
-            document.getElementById('scorecard-modal').classList.remove('active');
-        }
-        
-        // Close modal on background click
-        document.getElementById('scorecard-modal').addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal();
-            }
-        });
-        
-        function escapeHtml(text) {
-            if (!text) return '';
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        // Start connection when page loads
-        connectSSE();
-        
-        // Reconnect on visibility change (when user returns to tab)
-        document.addEventListener('visibilitychange', function() {
-            if (document.visibilityState === 'visible') {
-                connectSSE();
-            }
-        });
-        
-        // Fallback: fetch data periodically if SSE fails
-        setInterval(function() {
-            if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-                fetch('/api/scores')
-                    .then(r => r.json())
-                    .then(updateUI)
-                    .catch(console.error);
-            }
-        }, 5000);
-    </script>
-</body>
-</html>
-'''
-    
+
     def get_local_ip(self) -> str:
         """Get the local IP address for the machine."""
         try:
@@ -2033,7 +1666,7 @@ class LiveScoreServer:
             
         except Exception as e:
             self.running = False
-            return False, str(e)
+            return False, f"Failed to start server: {str(e)}"
     
     def _find_available_port(self, start_port: int) -> int:
         """Find an available port starting from start_port."""
@@ -2053,11 +1686,13 @@ class LiveScoreServer:
     def _run_server(self):
         """Run the Flask server (called in background thread)."""
         try:
+            # Use debug=False and don't use reloader to avoid hanging
             self.app.run(
                 host='0.0.0.0',
                 port=self.port,
                 threaded=True,
-                use_reloader=False
+                use_reloader=False,
+                debug=False
             )
         except Exception as e:
             print(f"Web server error: {e}")

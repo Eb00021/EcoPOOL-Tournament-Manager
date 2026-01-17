@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0d1117">
+    <meta name="msapplication-TileColor" content="#0d1117">
+    <meta name="format-detection" content="telephone=no">
+    <title>EcoPOOL Live Scores</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="header">
+        <h1>🎱 EcoPOOL Live Scores</h1>
+        <div class="subtitle">WVU EcoCAR Pool League</div>
+        <div class="live-indicator">
+            <span class="live-dot"></span>
+            <span>LIVE</span>
+        </div>
+        <div style="margin-top: 10px;">
+            <button id="manager-toggle" class="manager-toggle-btn" onclick="toggleManagerMode()">
+                🔧 Manager Mode
+            </button>
+        </div>
+    </div>
+    
+    <div id="content">
+        <div class="empty-state">
+            <div class="emoji">⏳</div>
+            <div>Loading scores...</div>
+        </div>
+    </div>
+    
+    <div class="update-time">
+        Last updated: <span id="update-time">--:--:-- --</span>
+        <span class="connection-status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Connecting...</span>
+        </span>
+    </div>
+    
+    <!-- Scorecard Modal -->
+    <div class="modal-overlay" id="scorecard-modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()" aria-label="Close">&times;</span>
+            <div id="scorecard-content">
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Reaction bar -->
+    <div class="reaction-bar">
+        <div class="reaction-buttons">
+            <button class="reaction-btn" onclick="sendReaction('nice_shot', event)" title="Nice shot!">🎯</button>
+            <button class="reaction-btn" onclick="sendReaction('fire', event)" title="Fire!">🔥</button>
+            <button class="reaction-btn" onclick="sendReaction('clutch', event)" title="Clutch!">💪</button>
+            <button class="reaction-btn" onclick="sendReaction('gg', event)" title="GG!">👏</button>
+            <button class="reaction-btn" onclick="sendReaction('trophy', event)" title="Trophy">🏆</button>
+            <button class="reaction-btn" onclick="sendReaction('wow', event)" title="WOW!">😮</button>
+            <button class="reaction-btn" onclick="sendReaction('heart', event)" title="Heart">❤️</button>
+            <button class="reaction-btn" onclick="sendReaction('pool', event)" title="Pool">🎱</button>
+        </div>
+    </div>
+    
+    <!-- Reaction display overlay -->
+    <div class="reaction-overlay" id="reactionOverlay"></div>
+    
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

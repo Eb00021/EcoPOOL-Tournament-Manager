@@ -58,12 +58,60 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - Gold, silver, bronze for top 3
 - Export to PDF or CSV
 
+### 🏅 Achievements
+- Player achievement badges and progress tracking
+- Tier-based achievement system (Bronze, Silver, Gold, Platinum)
+- Visual progress indicators for locked achievements
+- Achievement unlock notifications
+
+### 📈 Advanced Statistics
+- Head-to-head records between players
+- Player form and streak tracking
+- Match predictions based on historical data
+- Win/loss analytics and trends
+- Performance metrics and comparisons
+
+### 💳 Payments
+- Venmo integration for buy-in collection
+- Payment request tracking and status management
+- QR code generation for payment links
+- Payment history and confirmation tracking
+- Bulk payment request creation
+
+### ⚙️ Settings
+- Application preferences and configuration
+- Theme customization
+- Sound settings
+- Database management options
+
 ### 📱 Live Scores Web Server
 - Built-in Flask server to show live scores on phones and tablets
 - **Server-Sent Events (SSE)** for real-time updates without refresh
 - **QR code** for quick mobile access (requires `qrcode[pil]`)
-- Profile pictures on the live score view
+- **Visual tables grid**: See all tables at a glance with live match status
+- **Round progress tracking**: Monitor current round progress with completion stats
+- **Queue display**: View upcoming matches with round information
+- **League stats dashboard**: Top scorer, best win rate, most golden breaks
+- **Detailed scorecard modal**: Tap any match to see full game details with balls pocketed visualization
+- **Group badges**: Visual indicators for Solids vs Stripes assignments
+- **Profile pictures**: Player avatars displayed throughout the interface
+- **Connection status**: Real-time connection indicator with auto-reconnect
+- **Spectator Reactions**: Real-time emoji reactions from viewers (🎯 Nice shot!, 🔥 Great game!, 👏 GG!, etc.)
 - Start/stop from the sidebar; share the URL or QR with spectators
+
+### 📲 Manager Mode (Mobile Scoring)
+- **Password-protected** mobile interface for league managers
+- **Full scorecard control** from any phone or tablet on the network
+- **Pocket balls**: Tap balls to pocket them for either team with automatic scoring
+- **Auto group assignment**: First pocketed ball assigns Solids/Stripes based on breaking team
+- **Win game**: Mark games as won with single tap
+- **Golden break**: Record instant wins from 8-ball on break
+- **Early 8-ball**: Record fouls when 8-ball is pocketed early
+- **Reset table**: Clear all balls and start fresh for a game
+- **Start matches**: Assign queued matches to available tables
+- **Player conflict detection**: Prevents starting a match when players are already on an active table
+- **Complete matches**: End matches and free tables for new games
+- Real-time sync with desktop app and all spectator views
 
 ### 📄 Export & Data Management
 - **PDF**: Scorecards, leaderboard, match history, match diagram, bracket
@@ -75,6 +123,8 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - Custom fonts and dark theme
 - Animated cards and buttons on the dashboard
 - Celebration effects
+- Mobile-responsive design for live scores web interface
+- Visual pool table representation on web interface
 
 ## Installation
 
@@ -134,9 +184,19 @@ EcoPOOL Toolkit/
 ├── animations.py           # Animated cards, buttons, celebrations
 ├── fonts.py                # Custom fonts
 ├── profile_pictures.py     # Profile picture handling
+├── achievements.py         # Achievement system and badge management
+├── advanced_stats.py        # Advanced statistics calculations
+├── venmo_integration.py    # Venmo payment integration
+├── themes.py              # Theme management
+├── sounds.py               # Sound effects management
+├── undo_manager.py         # Undo/redo functionality
+├── spectator_reactions.py  # Spectator reaction system
 ├── requirements.txt
 ├── profile_pictures/       # Player profile images
 ├── fonts/                  # Custom font files
+├── sounds/                 # Sound effect files
+├── templates/              # Web interface HTML templates
+├── static/                 # Web interface CSS and JavaScript
 ├── views/
 │   ├── players_view.py
 │   ├── match_generator_view.py
@@ -144,7 +204,11 @@ EcoPOOL Toolkit/
 │   ├── table_tracker_view.py
 │   ├── bracket_view.py
 │   ├── history_view.py
-│   └── leaderboard_view.py
+│   ├── leaderboard_view.py
+│   ├── achievements_view.py
+│   ├── stats_view.py
+│   ├── payments_view.py
+│   └── settings_view.py
 └── (ecopool_league.db created on first run)
 ```
 
