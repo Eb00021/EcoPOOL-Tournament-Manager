@@ -948,6 +948,17 @@
             transform: scale(0.9);
             background: rgba(255, 255, 255, 0.3);
         }
+
+        .reaction-btn-img {
+            padding: 4px;
+        }
+
+        .reaction-img {
+            width: 36px;
+            height: 36px;
+            object-fit: contain;
+            border-radius: 4px;
+        }
         
         /* Prevent sticky active/hover state on mobile */
         .reaction-btn {

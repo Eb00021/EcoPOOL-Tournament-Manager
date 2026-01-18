@@ -55,6 +55,9 @@
     <!-- Reaction bar -->
     <div class="reaction-bar">
         <div class="reaction-buttons">
+            <button class="reaction-btn reaction-btn-img" onclick="sendReaction('ecocar', event)" title="EcoCAR!">
+                <img src="{{ url_for('static', filename='images/ecoREACTION.png') }}" alt="EcoCAR" class="reaction-img">
+            </button>
             <button class="reaction-btn" onclick="sendReaction('nice_shot', event)" title="Nice shot!">🎯</button>
             <button class="reaction-btn" onclick="sendReaction('fire', event)" title="Fire!">🔥</button>
             <button class="reaction-btn" onclick="sendReaction('clutch', event)" title="Clutch!">💪</button>

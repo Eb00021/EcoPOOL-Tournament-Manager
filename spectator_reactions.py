@@ -24,6 +24,7 @@ class Reaction:
 
 # Available reaction types
 REACTIONS = {
+    'ecocar': {'emoji': '🚗', 'text': 'EcoCAR!'},
     'nice_shot': {'emoji': '🎯', 'text': 'Nice shot!'},
     'great_game': {'emoji': '🔥', 'text': 'Great game!'},
     'gg': {'emoji': '👏', 'text': 'GG!'},
