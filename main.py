@@ -25,6 +25,7 @@ from tkinter import messagebox, filedialog
 import sys
 import os
 import io
+import webbrowser
 
 try:
     import qrcode
@@ -48,8 +49,10 @@ from views.history_view import HistoryView
 from views.table_tracker_view import TableTrackerView
 from views.bracket_view import BracketView
 from views.stats_view import StatsView
+from views.achievements_view import AchievementsView
 from views.payments_view import PaymentsView
 from views.settings_view import SettingsView
+from achievements import AchievementManager
 from animations import AnimatedCard, AnimatedButton, show_celebration
 from web_server import LiveScoreServer
 
@@ -75,6 +78,9 @@ class EcoPoolApp(ctk.CTk):
         # Initialize database
         self.db = DatabaseManager()
         self.exporter = Exporter(self.db)
+        
+        # Initialize achievement manager
+        self.achievement_mgr = AchievementManager(self.db)
         
         # Initialize web server for live scores
         self.web_server = LiveScoreServer(self.db)
@@ -149,17 +155,18 @@ class EcoPoolApp(ctk.CTk):
         self.nav_buttons = {}
         
         nav_items = [
-            ("home", "🏠 Dashboard", self.show_home),
-            ("players", "👥 Players", lambda: self.show_view("players")),
-            ("generator", "🎲 Match Generator", lambda: self.show_view("generator")),
-            ("scorecard", "🎯 Scorecard", lambda: self.show_view("scorecard")),
-            ("bracket", "🏆 Tournament", lambda: self.show_view("bracket")),
-            ("tables", "🎱 Table Tracker", lambda: self.show_view("tables")),
-            ("history", "📜 Match History", lambda: self.show_view("history")),
-            ("leaderboard", "📊 Leaderboard", lambda: self.show_view("leaderboard")),
-            ("stats", "📈 Advanced Stats", lambda: self.show_view("stats")),
-            ("payments", "💳 Payments", lambda: self.show_view("payments")),
-            ("settings", "⚙️ Settings", lambda: self.show_view("settings")),
+            ("home", "Dashboard", self.show_home),
+            ("players", "Players", lambda: self.show_view("players")),
+            ("generator", "Match Generator", lambda: self.show_view("generator")),
+            ("scorecard", "Scorecard", lambda: self.show_view("scorecard")),
+            ("bracket", "Tournament", lambda: self.show_view("bracket")),
+            ("tables", "Table Tracker", lambda: self.show_view("tables")),
+            ("history", "Match History", lambda: self.show_view("history")),
+            ("leaderboard", "Leaderboard", lambda: self.show_view("leaderboard")),
+            ("stats", "Advanced Stats", lambda: self.show_view("stats")),
+            ("achievements", "Achievements", lambda: self.show_view("achievements")),
+            ("payments", "Payments", lambda: self.show_view("payments")),
+            ("settings", "Settings", lambda: self.show_view("settings")),
         ]
         
         nav_frame = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
@@ -183,137 +190,13 @@ class EcoPoolApp(ctk.CTk):
         # Separator
         ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
         
-        # Quick stats (compact)
-        stats_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
-        stats_frame.pack(fill="x", padx=10, pady=5)
-        
-        stats_inner = ctk.CTkFrame(stats_frame, fg_color="transparent")
-        stats_inner.pack(fill="x", padx=10, pady=8)
-        
-        self.stats_players_label = ctk.CTkLabel(
-            stats_inner,
-            text="👥 0",
-            font=get_font(12)
-        )
-        self.stats_players_label.pack(side="left", padx=5)
-        
-        self.stats_matches_label = ctk.CTkLabel(
-            stats_inner,
-            text="🎱 0",
-            font=get_font(12)
-        )
-        self.stats_matches_label.pack(side="left", padx=5)
-        
-        self.stats_active_label = ctk.CTkLabel(
-            stats_inner,
-            text="🔴 0",
-            font=get_font(12),
-            text_color="#4CAF50"
-        )
-        self.stats_active_label.pack(side="left", padx=5)
-        
-        # Separator
-        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
-        
-        # Data Management section
-        data_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
-        data_frame.pack(fill="x", padx=10, pady=5)
-        
-        ctk.CTkLabel(
-            data_frame,
-            text="Data Management",
-            font=get_font(13, "bold"),
-            text_color="#888888"
-        ).pack(pady=(8, 5))
-        
-        ctk.CTkButton(
-            data_frame,
-            text="New Pool Night",
-            font=get_font(11),
-            height=30,
-            fg_color="#c44536",
-            hover_color="#a43526",
-            command=self.new_pool_night
-        ).pack(fill="x", padx=8, pady=2)
-        
-        # Matches section label
-        ctk.CTkLabel(
-            data_frame,
-            text="Matches",
-            font=get_font(10),
-            text_color="#666666"
-        ).pack(anchor="w", padx=10, pady=(5, 2))
-        
-        # Save/Load Matches row
-        save_load_frame = ctk.CTkFrame(data_frame, fg_color="transparent")
-        save_load_frame.pack(fill="x", padx=8, pady=2)
-        
-        ctk.CTkButton(
-            save_load_frame,
-            text="💾 Save",
-            font=get_font(11),
-            height=30,
-            width=95,
-            fg_color="#3d5a80",
-            hover_color="#2d4a70",
-            command=self.save_matches
-        ).pack(side="left", padx=(0, 2))
-        
-        ctk.CTkButton(
-            save_load_frame,
-            text="📂 Load",
-            font=get_font(11),
-            height=30,
-            width=95,
-            fg_color="#3d5a80",
-            hover_color="#2d4a70",
-            command=self.load_matches
-        ).pack(side="right", padx=(2, 0))
-        
-        # Players section label
-        ctk.CTkLabel(
-            data_frame,
-            text="Players",
-            font=get_font(10),
-            text_color="#666666"
-        ).pack(anchor="w", padx=10, pady=(5, 2))
-        
-        # Export/Import Players row
-        export_import_frame = ctk.CTkFrame(data_frame, fg_color="transparent")
-        export_import_frame.pack(fill="x", padx=8, pady=(2, 8))
-        
-        ctk.CTkButton(
-            export_import_frame,
-            text="📤 Export",
-            font=get_font(11),
-            height=30,
-            width=95,
-            fg_color="#6b4e8a",
-            hover_color="#5b3e7a",
-            command=self.export_players
-        ).pack(side="left", padx=(0, 2))
-        
-        ctk.CTkButton(
-            export_import_frame,
-            text="📥 Import",
-            font=get_font(11),
-            height=30,
-            width=95,
-            fg_color="#6b4e8a",
-            hover_color="#5b3e7a",
-            command=self.import_players
-        ).pack(side="right", padx=(2, 0))
-        
-        # Separator
-        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
-        
-        # Live Scores Web Server section
+        # Live Scores Web Server section (moved up)
         web_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
         web_frame.pack(fill="x", padx=10, pady=5)
         
         ctk.CTkLabel(
             web_frame,
-            text="📱 Live Scores Server",
+            text="Live Scores Server",
             font=get_font(13, "bold"),
             text_color="#888888"
         ).pack(pady=(8, 5))
@@ -327,7 +210,7 @@ class EcoPoolApp(ctk.CTk):
         
         self.web_server_btn = ctk.CTkButton(
             web_frame,
-            text="▶ Start Server",
+            text="Start Server",
             font=get_font(11),
             height=30,
             fg_color="#2d7a3e",
@@ -338,7 +221,7 @@ class EcoPoolApp(ctk.CTk):
         
         self.qr_code_btn = ctk.CTkButton(
             web_frame,
-            text="📱 Show QR Code",
+            text="Show QR Code",
             font=get_font(11),
             height=30,
             fg_color="#3d5a80",
@@ -355,6 +238,45 @@ class EcoPoolApp(ctk.CTk):
             text_color="#666666"
         )
         self.web_server_status.pack(pady=(2, 8))
+        
+        # Separator
+        ctk.CTkFrame(sidebar_scroll, height=2, fg_color="#333333").pack(fill="x", padx=15, pady=10)
+        
+        # Quick stats (compact)
+        stats_frame = ctk.CTkFrame(sidebar_scroll, fg_color="#161b22", corner_radius=10)
+        stats_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(
+            stats_frame,
+            text="Quick Stats",
+            font=get_font(11, "bold"),
+            text_color="#888888"
+        ).pack(pady=(8, 5))
+        
+        stats_inner = ctk.CTkFrame(stats_frame, fg_color="transparent")
+        stats_inner.pack(fill="x", padx=10, pady=(0, 8))
+        
+        self.stats_players_label = ctk.CTkLabel(
+            stats_inner,
+            text="Players: 0",
+            font=get_font(11)
+        )
+        self.stats_players_label.pack(side="left", padx=5)
+        
+        self.stats_matches_label = ctk.CTkLabel(
+            stats_inner,
+            text="Matches: 0",
+            font=get_font(11)
+        )
+        self.stats_matches_label.pack(side="left", padx=5)
+        
+        self.stats_active_label = ctk.CTkLabel(
+            stats_inner,
+            text="Live: 0",
+            font=get_font(11),
+            text_color="#4CAF50"
+        )
+        self.stats_active_label.pack(side="left", padx=5)
         
         # Version info at bottom (fixed)
         ctk.CTkLabel(
@@ -378,9 +300,9 @@ class EcoPoolApp(ctk.CTk):
         matches = self.db.get_all_matches(limit=1000)
         active = [m for m in matches if not m['is_complete']]
         
-        self.stats_players_label.configure(text=f"👥 {len(players)}")
-        self.stats_matches_label.configure(text=f"🎱 {len(matches)}")
-        self.stats_active_label.configure(text=f"🔴 {len(active)}")
+        self.stats_players_label.configure(text=f"Players: {len(players)}")
+        self.stats_matches_label.configure(text=f"Matches: {len(matches)}")
+        self.stats_active_label.configure(text=f"Live: {len(active)}")
     
     def set_active_nav(self, key: str):
         """Highlight the active navigation button."""
@@ -425,20 +347,19 @@ class EcoPoolApp(ctk.CTk):
         cards_frame.pack(fill="x", pady=10)
         
         cards = [
-            ("🎲", "Generate Matches", "Create random team pairings\nfor league night", "generator", "#2d7a3e"),
-            ("🎯", "Open Scorecard", "Track scores with\ninteractive pool table", "scorecard", "#1e5a8a"),
-            ("🏆", "Tournament", "Create end-of-semester\nbrackets & playoffs", "bracket", "#8a3d3d"),
-            ("👥", "Manage Players", "Add, edit, or view\nplayer statistics", "players", "#6b4e8a"),
-            ("📊", "Leaderboard", "Check rankings and\nexport reports", "leaderboard", "#8a6b3d"),
+            ("Generate Matches", "Create random team pairings\nfor league night", "generator", "#2d7a3e"),
+            ("Open Scorecard", "Track scores with\ninteractive pool table", "scorecard", "#1e5a8a"),
+            ("Tournament", "Create end-of-semester\nbrackets & playoffs", "bracket", "#8a3d3d"),
+            ("Manage Players", "Add, edit, or view\nplayer statistics", "players", "#6b4e8a"),
+            ("Leaderboard", "Check rankings and\nexport reports", "leaderboard", "#8a6b3d"),
         ]
         
-        for emoji, title, desc, view_key, color in cards:
-            card = AnimatedCard(cards_frame, fg_color=color, corner_radius=15, width=210, height=170)
+        for title, desc, view_key, color in cards:
+            card = AnimatedCard(cards_frame, fg_color=color, corner_radius=15, width=210, height=140)
             card.pack(side="left", padx=8, pady=10)
             card.pack_propagate(False)
             
-            ctk.CTkLabel(card, text=emoji, font=get_font(36)).pack(pady=(20, 8))
-            ctk.CTkLabel(card, text=title, font=get_font(16, "bold")).pack()
+            ctk.CTkLabel(card, text=title, font=get_font(16, "bold")).pack(pady=(25, 8))
             ctk.CTkLabel(card, text=desc, font=get_font(11), 
                         text_color="#dddddd", justify="center").pack(pady=5)
             
@@ -455,7 +376,7 @@ class EcoPoolApp(ctk.CTk):
         
         ctk.CTkLabel(
             activity_frame,
-            text="📜 Recent Matches",
+            text="Recent Matches",
             font=get_font(20, "bold")
         ).pack(anchor="w", padx=20, pady=15)
         
@@ -478,7 +399,7 @@ class EcoPoolApp(ctk.CTk):
         
         ctk.CTkLabel(
             rules_frame,
-            text="📋 Quick Rules Reference",
+            text="Quick Rules Reference",
             font=get_font(16, "bold")
         ).pack(anchor="w", padx=20, pady=(15, 10))
         
@@ -503,9 +424,11 @@ class EcoPoolApp(ctk.CTk):
         row.pack(fill="x", padx=15, pady=3)
         row.pack_propagate(False)
         
-        # Status
-        status = "✅" if match['is_complete'] else "🔴"
-        ctk.CTkLabel(row, text=status, font=get_font(14)).pack(side="left", padx=15, pady=10)
+        # Status indicator (colored dot)
+        status_color = "#4CAF50" if match['is_complete'] else "#f44336"
+        status_frame = ctk.CTkFrame(row, fg_color=status_color, corner_radius=6, width=12, height=12)
+        status_frame.pack(side="left", padx=15, pady=10)
+        status_frame.pack_propagate(False)
         
         # Teams
         team1 = match['team1_p1_name'] or "Unknown"
@@ -549,7 +472,8 @@ class EcoPoolApp(ctk.CTk):
             )
             view.pack(fill="both", expand=True)
         elif view_name == "scorecard":
-            view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated)
+            view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated,
+                                achievement_mgr=self.achievement_mgr)
             view.pack(fill="both", expand=True)
         elif view_name == "bracket":
             view = BracketView(self.content, self.db)
@@ -567,11 +491,19 @@ class EcoPoolApp(ctk.CTk):
         elif view_name == "stats":
             view = StatsView(self.content, self.db)
             view.pack(fill="both", expand=True)
+        elif view_name == "achievements":
+            view = AchievementsView(self.content, self.db)
+            view.pack(fill="both", expand=True)
         elif view_name == "payments":
             view = PaymentsView(self.content, self.db)
             view.pack(fill="both", expand=True)
         elif view_name == "settings":
-            view = SettingsView(self.content, self.db)
+            view = SettingsView(
+                self.content, self.db,
+                exporter=self.exporter,
+                on_new_pool_night=self.new_pool_night,
+                on_data_change=self.on_settings_data_change
+            )
             view.pack(fill="both", expand=True)
     
     def new_pool_night(self):
@@ -685,13 +617,19 @@ class EcoPoolApp(ctk.CTk):
         # Notify web server of new matches
         self.notify_scores_updated()
     
+    def on_settings_data_change(self):
+        """Called when data changes from settings (import/load)."""
+        self.update_quick_stats()
+        self.notify_scores_updated()
+    
     def go_to_scorecard(self, match_id: int):
         """Navigate to scorecard with a specific match selected."""
         self.clear_content()
         self.set_active_nav("scorecard")
         self.update_quick_stats()
         
-        view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated)
+        view = ScorecardView(self.content, self.db, on_score_change=self.notify_scores_updated,
+                            achievement_mgr=self.achievement_mgr)
         view.pack(fill="both", expand=True)
         
         # Select the match in the scorecard
@@ -702,7 +640,7 @@ class EcoPoolApp(ctk.CTk):
         if self.web_server.is_running():
             self.web_server.stop()
             self.web_server_btn.configure(
-                text="▶ Start Server",
+                text="Start Server",
                 fg_color="#2d7a3e",
                 hover_color="#1a5f2a"
             )
@@ -717,13 +655,13 @@ class EcoPoolApp(ctk.CTk):
             if success:
                 self._current_server_url = result
                 self.web_server_btn.configure(
-                    text="⏹ Stop Server",
+                    text="Stop Server",
                     fg_color="#c44536",
                     hover_color="#a43526"
                 )
                 self.qr_code_btn.configure(state="normal")
                 self.web_server_status.configure(
-                    text=f"📱 {result}",
+                    text=result,
                     text_color="#4CAF50"
                 )
                 # Show QR code popup automatically
@@ -779,7 +717,7 @@ class EcoPoolApp(ctk.CTk):
         # Header
         ctk.CTkLabel(
             popup,
-            text="📱 Scan QR Code",
+            text="Scan QR Code",
             font=get_font(22, "bold"),
             text_color="#4CAF50"
         ).pack(pady=(20, 5))
@@ -817,9 +755,11 @@ class EcoPoolApp(ctk.CTk):
             url_frame,
             text=url,
             font=get_font(14, "bold"),
-            text_color="#4CAF50"
+            text_color="#4CAF50",
+            cursor="hand2"
         )
         url_label.pack(pady=10)
+        url_label.bind("<Button-1>", lambda e: webbrowser.open(url))
         
         # Close button
         ctk.CTkButton(

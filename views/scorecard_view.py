@@ -11,6 +11,7 @@ from database import DatabaseManager
 from exporter import Exporter
 from animations import flash_widget
 from fonts import get_font
+from achievements import AchievementManager
 
 
 # Ball colors for 8-ball
@@ -228,11 +229,12 @@ class PoolTableCanvas(ctk.CTkFrame):
 class ScorecardView(ctk.CTkFrame):
     """Main scorecard view with match selection and game scoring."""
     
-    def __init__(self, parent, db: DatabaseManager, on_score_change=None):
+    def __init__(self, parent, db: DatabaseManager, on_score_change=None, achievement_mgr=None):
         super().__init__(parent, fg_color="transparent")
         self.db = db
         self.exporter = Exporter(db)
         self.on_score_change = on_score_change  # Callback for live score updates
+        self.achievement_mgr = achievement_mgr or AchievementManager(db)
         
         self.current_match = None
         self.current_game = None
@@ -1394,7 +1396,65 @@ class ScorecardView(ctk.CTkFrame):
                               f"Team {team} wins with a GOLDEN BREAK!\n17 points!")
         else:
             messagebox.showinfo("Game Over", f"Team {team} wins Game {self.current_game_num}!")
+        
+        # Check and update achievements for all players in the match
+        self._check_achievements_for_match(team)
     
+    def _check_achievements_for_match(self, winning_team: int):
+        """Check and award achievements for all players in the match."""
+        if not self.current_match or not self.achievement_mgr:
+            return
+        
+        # Get all player IDs involved in this match
+        player_ids = [
+            self.current_match.get('team1_player1_id'),
+            self.current_match.get('team1_player2_id'),
+            self.current_match.get('team2_player1_id'),
+            self.current_match.get('team2_player2_id'),
+        ]
+        player_ids = [pid for pid in player_ids if pid]  # Remove None values
+        
+        # Update win streaks based on who won
+        for pid in player_ids:
+            is_team1 = (pid == self.current_match.get('team1_player1_id') or 
+                       pid == self.current_match.get('team1_player2_id'))
+            won = (is_team1 and winning_team == 1) or (not is_team1 and winning_team == 2)
+            self.achievement_mgr.update_win_streak(pid, won)
+        
+        # Check for newly unlocked achievements
+        all_unlocked = []
+        for pid in player_ids:
+            unlocked = self.achievement_mgr.check_and_unlock_achievements(pid)
+            if unlocked:
+                player = self.db.get_player(pid)
+                for achievement in unlocked:
+                    all_unlocked.append((player, achievement))
+        
+        # Show achievement popups for newly unlocked achievements
+        if all_unlocked:
+            self._show_achievement_popups(all_unlocked)
+    
+    def _show_achievement_popups(self, unlocked_list):
+        """Show popups for newly unlocked achievements."""
+        from views.achievements_view import AchievementUnlockPopup
+        
+        # Show popups for each unlocked achievement (max 3 to avoid spam)
+        for i, (player, achievement) in enumerate(unlocked_list[:3]):
+            if i > 0:
+                # Delay subsequent popups
+                self.after(i * 1000, lambda p=player, a=achievement: 
+                          AchievementUnlockPopup(self.winfo_toplevel(), a, p.name if p else None))
+            else:
+                AchievementUnlockPopup(self.winfo_toplevel(), achievement, player.name if player else None)
+        
+        # If more than 3 achievements unlocked, show a summary
+        if len(unlocked_list) > 3:
+            self.after(3000, lambda: messagebox.showinfo(
+                "More Achievements!", 
+                f"Plus {len(unlocked_list) - 3} more achievements unlocked!\n"
+                "Check the Achievements page for details."
+            ))
+
     def update_match_status(self):
         """Update overall match status (games won)."""
         games = self.db.get_games_for_match(self.current_match['id'])

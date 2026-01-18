@@ -221,6 +221,16 @@ class AchievementManager:
             if player.games_played >= min_games:
                 return int(player.win_rate)
             return 0
+        elif req_type == 'perfect_night':
+            return self._get_perfect_nights(player.id)
+        elif req_type == 'comeback_win':
+            return self._get_comeback_wins(player.id)
+        elif req_type == 'underdog_win':
+            return self._get_underdog_wins(player.id)
+        elif req_type == 'rivalry_wins':
+            return self._get_max_rivalry_wins(player.id)
+        elif req_type == 'partner_wins':
+            return self._get_max_partner_wins(player.id)
 
         return 0
 
@@ -235,6 +245,178 @@ class AchievementManager:
 
         row = cursor.fetchone()
         return row['max_win_streak'] if row else 0
+
+    def _get_perfect_nights(self, player_id: int) -> int:
+        """Count nights where player won all their games (minimum 3 games)."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get all league nights this player participated in
+        cursor.execute('''
+            SELECT m.league_night_id, g.winner_team,
+                   m.team1_player1_id, m.team1_player2_id,
+                   m.team2_player1_id, m.team2_player2_id
+            FROM matches m
+            JOIN games g ON g.match_id = m.id
+            WHERE m.league_night_id IS NOT NULL
+            AND g.winner_team > 0
+            AND (m.team1_player1_id = ? OR m.team1_player2_id = ?
+                 OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+        ''', (player_id, player_id, player_id, player_id))
+
+        # Group by league night and count wins/games
+        nights = {}
+        for row in cursor.fetchall():
+            night_id = row['league_night_id']
+            if night_id not in nights:
+                nights[night_id] = {'games': 0, 'wins': 0}
+            
+            nights[night_id]['games'] += 1
+            is_team1 = row['team1_player1_id'] == player_id or row['team1_player2_id'] == player_id
+            won = (is_team1 and row['winner_team'] == 1) or (not is_team1 and row['winner_team'] == 2)
+            if won:
+                nights[night_id]['wins'] += 1
+
+        # Count perfect nights (won all, minimum 3 games)
+        perfect_count = sum(1 for n in nights.values() if n['games'] >= 3 and n['wins'] == n['games'])
+        return perfect_count
+
+    def _get_comeback_wins(self, player_id: int) -> int:
+        """Count matches where player won after losing the first game."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get all matches and their games for this player
+        cursor.execute('''
+            SELECT m.id, m.team1_player1_id, m.team1_player2_id,
+                   m.team2_player1_id, m.team2_player2_id
+            FROM matches m
+            WHERE m.is_complete = 1
+            AND (m.team1_player1_id = ? OR m.team1_player2_id = ?
+                 OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+        ''', (player_id, player_id, player_id, player_id))
+
+        comeback_count = 0
+        for match in cursor.fetchall():
+            match_id = match['id']
+            is_team1 = match['team1_player1_id'] == player_id or match['team1_player2_id'] == player_id
+
+            # Get games for this match
+            cursor.execute('''
+                SELECT game_number, winner_team FROM games
+                WHERE match_id = ? AND winner_team > 0
+                ORDER BY game_number
+            ''', (match_id,))
+            
+            games = cursor.fetchall()
+            if len(games) < 2:
+                continue
+
+            # Check if lost first game but won the match
+            first_game = games[0]
+            lost_first = (is_team1 and first_game['winner_team'] == 2) or (not is_team1 and first_game['winner_team'] == 1)
+            
+            if lost_first:
+                # Count wins in remaining games
+                player_wins = sum(1 for g in games[1:] if (is_team1 and g['winner_team'] == 1) or (not is_team1 and g['winner_team'] == 2))
+                opponent_wins = len(games) - 1 - player_wins
+                if player_wins > opponent_wins:
+                    comeback_count += 1
+
+        return comeback_count
+
+    def _get_underdog_wins(self, player_id: int) -> int:
+        """Count wins against players ranked 5+ spots above."""
+        # Get current rankings by total points
+        players = self.db.get_all_players()
+        players.sort(key=lambda p: (-p.total_points, -p.games_won))
+        
+        # Find this player's rank
+        player_rank = None
+        for i, p in enumerate(players):
+            if p.id == player_id:
+                player_rank = i
+                break
+        
+        if player_rank is None:
+            return 0
+
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get all games this player won
+        cursor.execute('''
+            SELECT m.team1_player1_id, m.team1_player2_id,
+                   m.team2_player1_id, m.team2_player2_id, g.winner_team
+            FROM matches m
+            JOIN games g ON g.match_id = m.id
+            WHERE g.winner_team > 0
+            AND (m.team1_player1_id = ? OR m.team1_player2_id = ?
+                 OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+        ''', (player_id, player_id, player_id, player_id))
+
+        underdog_wins = 0
+        for row in cursor.fetchall():
+            is_team1 = row['team1_player1_id'] == player_id or row['team1_player2_id'] == player_id
+            won = (is_team1 and row['winner_team'] == 1) or (not is_team1 and row['winner_team'] == 2)
+            
+            if won:
+                # Get opponent IDs
+                if is_team1:
+                    opponents = [row['team2_player1_id'], row['team2_player2_id']]
+                else:
+                    opponents = [row['team1_player1_id'], row['team1_player2_id']]
+                
+                # Check if any opponent is ranked 5+ spots above
+                for opp_id in opponents:
+                    if opp_id:
+                        for i, p in enumerate(players):
+                            if p.id == opp_id and player_rank - i >= 5:
+                                underdog_wins += 1
+                                break
+
+        return underdog_wins
+
+    def _get_max_rivalry_wins(self, player_id: int) -> int:
+        """Get the maximum wins against any single opponent."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get all games and opponents
+        cursor.execute('''
+            SELECT m.team1_player1_id, m.team1_player2_id,
+                   m.team2_player1_id, m.team2_player2_id, g.winner_team
+            FROM matches m
+            JOIN games g ON g.match_id = m.id
+            WHERE g.winner_team > 0
+            AND (m.team1_player1_id = ? OR m.team1_player2_id = ?
+                 OR m.team2_player1_id = ? OR m.team2_player2_id = ?)
+        ''', (player_id, player_id, player_id, player_id))
+
+        opponent_wins = {}
+        for row in cursor.fetchall():
+            is_team1 = row['team1_player1_id'] == player_id or row['team1_player2_id'] == player_id
+            won = (is_team1 and row['winner_team'] == 1) or (not is_team1 and row['winner_team'] == 2)
+            
+            if won:
+                # Get opponent IDs
+                if is_team1:
+                    opponents = [row['team2_player1_id'], row['team2_player2_id']]
+                else:
+                    opponents = [row['team1_player1_id'], row['team1_player2_id']]
+                
+                for opp_id in opponents:
+                    if opp_id:
+                        opponent_wins[opp_id] = opponent_wins.get(opp_id, 0) + 1
+
+        return max(opponent_wins.values()) if opponent_wins else 0
+
+    def _get_max_partner_wins(self, player_id: int) -> int:
+        """Get the maximum wins with any single partner."""
+        partner_stats = self.db.get_partner_stats(player_id)
+        if partner_stats:
+            return max(stat['wins_together'] for stat in partner_stats)
+        return 0
 
     def check_and_unlock_achievements(self, player_id: int) -> List[Achievement]:
         """Check all achievements and unlock any that are earned.

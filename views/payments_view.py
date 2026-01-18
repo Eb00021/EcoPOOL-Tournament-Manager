@@ -369,14 +369,14 @@ class PaymentsView(ctk.CTkFrame):
         """Show dialog to create new payment requests."""
         dialog = ctk.CTkToplevel(self)
         dialog.title('Create Payment Requests')
-        dialog.geometry('500x600')
+        dialog.geometry('500x750')
         dialog.transient(self.winfo_toplevel())
         dialog.grab_set()
 
         # Center
         dialog.update_idletasks()
         x = self.winfo_rootx() + (self.winfo_width() // 2) - 250
-        y = self.winfo_rooty() + (self.winfo_height() // 2) - 300
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - 375
         dialog.geometry(f'+{x}+{y}')
 
         ctk.CTkLabel(
@@ -426,7 +426,7 @@ class PaymentsView(ctk.CTkFrame):
             font=get_font(14)
         ).pack(anchor='w', padx=30, pady=(15, 5))
 
-        players_frame = ctk.CTkScrollableFrame(dialog, height=250)
+        players_frame = ctk.CTkScrollableFrame(dialog, height=380)
         players_frame.pack(fill='x', padx=30, pady=5)
 
         players = self.db.get_all_players()

@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0d1117">
+    <title>EcoPOOL Payment Admin</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+            color: #e6edf3;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            color: #4CAF50;
+            font-size: 1.8em;
+            margin-bottom: 5px;
+        }
+
+        .header .subtitle {
+            color: #8b949e;
+            font-size: 0.9em;
+        }
+
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            color: #4CAF50;
+            font-size: 1.2em;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #21262d;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+
+        .stat-value.warning {
+            color: #f0883e;
+        }
+
+        .stat-value.danger {
+            color: #f85149;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: #8b949e;
+            margin-top: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #21262d;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #238636, #4CAF50);
+            transition: width 0.5s ease;
+        }
+
+        .player-card {
+            background: #21262d;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-left: 4px solid #30363d;
+        }
+
+        .player-card.has-debt {
+            border-left-color: #f85149;
+        }
+
+        .player-card.paid {
+            border-left-color: #3fb950;
+        }
+
+        .player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+
+        .player-name {
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        .player-venmo {
+            font-size: 0.9em;
+            color: #58a6ff;
+        }
+
+        .player-venmo.no-venmo {
+            color: #f85149;
+        }
+
+        .player-balance {
+            text-align: right;
+        }
+
+        .balance-amount {
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+
+        .balance-amount.owed {
+            color: #f85149;
+        }
+
+        .balance-amount.paid {
+            color: #3fb950;
+        }
+
+        .balance-label {
+            font-size: 0.8em;
+            color: #8b949e;
+        }
+
+        .player-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-venmo {
+            background: #008cff;
+            color: white;
+        }
+
+        .btn-venmo:hover {
+            background: #0077dd;
+        }
+
+        .btn-paid {
+            background: #238636;
+            color: white;
+        }
+
+        .btn-paid:hover {
+            background: #2ea043;
+        }
+
+        .btn-secondary {
+            background: #21262d;
+            color: #e6edf3;
+            border: 1px solid #30363d;
+        }
+
+        .btn-secondary:hover {
+            background: #30363d;
+        }
+
+        .venmo-link-box {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 10px;
+            margin-top: 10px;
+            display: none;
+        }
+
+        .venmo-link-box.show {
+            display: block;
+        }
+
+        .venmo-link-box input {
+            width: 100%;
+            padding: 8px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            color: #e6edf3;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .venmo-link-box .link-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .buyin-setting {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #21262d;
+            border-radius: 8px;
+        }
+
+        .buyin-setting label {
+            font-weight: 500;
+        }
+
+        .buyin-setting input {
+            width: 80px;
+            padding: 8px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #e6edf3;
+            font-size: 16px;
+            text-align: center;
+        }
+
+        .error-message {
+            color: #f85149;
+            padding: 20px;
+            text-align: center;
+            background: rgba(248, 81, 73, 0.1);
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+
+        .back-link {
+            display: inline-block;
+            color: #58a6ff;
+            text-decoration: none;
+            margin-bottom: 20px;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: #238636;
+            color: white;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+
+        .refresh-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+
+        .empty-state .icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .filter-tabs {
+            display: flex;
+            gap: 8px;
+        }
+
+        .filter-tab {
+            padding: 6px 12px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #8b949e;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .filter-tab:hover {
+            background: #30363d;
+            color: #e6edf3;
+        }
+
+        .filter-tab.active {
+            background: #238636;
+            border-color: #238636;
+            color: white;
+        }
+
+        .nights-summary {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .night-badge {
+            background: #21262d;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.85em;
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 10px;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .player-header {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .player-balance {
+                text-align: left;
+            }
+
+            .player-actions {
+                flex-direction: column;
+            }
+
+            .btn {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <a href="/" class="back-link">&larr; Back to Live Scores</a>
+
+    <div class="header">
+        <h1>💳 Payment Admin</h1>
+        <div class="subtitle">EcoPOOL League Payment Management</div>
+    </div>
+
+    <!-- Summary Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="total-expected">$0</div>
+            <div class="stat-label">Total Expected</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="total-collected">$0</div>
+            <div class="stat-label">Collected</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value warning" id="outstanding">$0</div>
+            <div class="stat-label">Outstanding</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="collection-rate">0%</div>
+            <div class="stat-label">Rate</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Season: <span id="season-name">Loading...</span></h2>
+        <div id="season-info"></div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="collection-progress" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Player Payments -->
+    <div class="card">
+        <div class="section-header">
+            <h2>Player Balances</h2>
+            <div class="filter-tabs">
+                <button class="filter-tab active" onclick="setFilter('outstanding')">Owes Money</button>
+                <button class="filter-tab" onclick="setFilter('all')">All Players</button>
+            </div>
+        </div>
+
+        <div class="buyin-setting">
+            <label>Buy-in Amount:</label>
+            <span>$</span>
+            <input type="number" id="buyin-amount" value="5" step="0.50" min="0">
+        </div>
+
+        <div id="players-list" class="loading">Loading player data...</div>
+    </div>
+
+    <button class="refresh-btn" onclick="refreshData()" title="Refresh Data">&#8635;</button>
+
+    <script>
+        let playersData = [];
+        let currentFilter = 'outstanding';
+
+        function setFilter(filter) {
+            currentFilter = filter;
+            document.querySelectorAll('.filter-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.textContent.toLowerCase().includes(filter === 'outstanding' ? 'owes' : 'all'));
+            });
+            renderPlayers();
+        }
+
+        async function loadData() {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                
+                const response = await fetch('/api/payments/season-summary', {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('season-name').textContent = 'No Season';
+                    document.getElementById('season-info').innerHTML = `<p class="error-message">${data.error}</p>`;
+                    document.getElementById('players-list').innerHTML = '<div class="empty-state"><div class="icon">📋</div><p>No season data available.<br>Create a season and league nights to track payments.</p></div>';
+                    return;
+                }
+
+                // Update stats
+                document.getElementById('total-expected').textContent = `$${data.total_expected.toFixed(2)}`;
+                document.getElementById('total-collected').textContent = `$${data.total_collected.toFixed(2)}`;
+                document.getElementById('outstanding').textContent = `$${data.outstanding.toFixed(2)}`;
+                document.getElementById('collection-rate').textContent = `${data.collection_rate}%`;
+                document.getElementById('collection-progress').style.width = `${data.collection_rate}%`;
+
+                // Season info
+                const seasonName = data.season ? data.season.name : 'Current Season';
+                document.getElementById('season-name').textContent = seasonName;
+                document.getElementById('season-info').innerHTML = `
+                    <p>${data.total_nights} league nights | ${data.total_players} players</p>
+                `;
+
+                // Store players data
+                playersData = data.player_standings || [];
+                renderPlayers();
+
+            } catch (err) {
+                console.error('Error loading data:', err);
+                if (err.name === 'AbortError') {
+                    document.getElementById('players-list').innerHTML = '<div class="error-message">Request timed out. Please try again.</div>';
+                } else {
+                    document.getElementById('players-list').innerHTML = `<div class="error-message">Error loading data: ${err.message}</div>`;
+                }
+            }
+        }
+
+        function renderPlayers() {
+            const container = document.getElementById('players-list');
+            
+            if (!playersData || playersData.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="icon">👥</div><p>No player data available</p></div>';
+                return;
+            }
+
+            // Filter players
+            let filtered = playersData;
+            if (currentFilter === 'outstanding') {
+                filtered = playersData.filter(p => p.outstanding > 0);
+            }
+
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="icon">✅</div><p>All payments collected!</p></div>';
+                return;
+            }
+
+            // Sort by outstanding amount (descending)
+            filtered.sort((a, b) => b.outstanding - a.outstanding);
+
+            const html = filtered.map(player => {
+                const hasVenmo = player.venmo && player.venmo.trim() !== '';
+                const isPaid = player.outstanding <= 0;
+                const cardClass = isPaid ? 'paid' : 'has-debt';
+                
+                return `
+                <div class="player-card ${cardClass}">
+                    <div class="player-header">
+                        <div>
+                            <div class="player-name">${player.name}</div>
+                            <div class="player-venmo ${hasVenmo ? '' : 'no-venmo'}">
+                                ${hasVenmo ? '@' + player.venmo : 'No Venmo username'}
+                            </div>
+                        </div>
+                        <div class="player-balance">
+                            <div class="balance-amount ${isPaid ? 'paid' : 'owed'}">
+                                ${isPaid ? '✓ Paid' : '$' + player.outstanding.toFixed(2)}
+                            </div>
+                            <div class="balance-label">
+                                $${player.total_paid.toFixed(2)} / $${player.total_owed.toFixed(2)}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${!isPaid ? `
+                    <div class="player-actions">
+                        ${hasVenmo ? `
+                            <button class="btn btn-venmo" onclick="openVenmoRequest('${player.venmo}', ${player.outstanding}, '${player.name}')">
+                                📲 Request $${player.outstanding.toFixed(2)} via Venmo
+                            </button>
+                            <button class="btn btn-secondary" onclick="toggleVenmoLink(${player.id})">
+                                🔗 Copy Link
+                            </button>
+                        ` : ''}
+                        <button class="btn btn-paid" onclick="markPlayerPaid(${player.id}, '${player.name}')">
+                            ✓ Mark Paid
+                        </button>
+                    </div>
+                    
+                    ${hasVenmo ? `
+                    <div class="venmo-link-box" id="link-box-${player.id}">
+                        <input type="text" id="link-input-${player.id}" value="${generateVenmoRequestLink(player.venmo, player.outstanding, player.name)}" readonly onclick="this.select()">
+                        <div class="link-actions">
+                            <button class="btn btn-secondary" onclick="copyLink(${player.id})">📋 Copy</button>
+                            <button class="btn btn-venmo" onclick="window.open(document.getElementById('link-input-${player.id}').value, '_blank')">🔗 Open</button>
+                        </div>
+                    </div>
+                    ` : ''}
+                    ` : ''}
+                </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+        }
+
+        function generateVenmoRequestLink(venmoUsername, amount, playerName) {
+            const username = venmoUsername.replace('@', '');
+            const note = encodeURIComponent(`EcoPOOL League Buy-In - ${playerName}`);
+            // Venmo deep link for requesting money
+            return `venmo://paycharge?txn=charge&recipients=${username}&amount=${amount}&note=${note}`;
+        }
+
+        function generateVenmoWebLink(venmoUsername, amount, playerName) {
+            const username = venmoUsername.replace('@', '');
+            const note = encodeURIComponent(`EcoPOOL League Buy-In - ${playerName}`);
+            return `https://venmo.com/${username}?txn=charge&amount=${amount}&note=${note}`;
+        }
+
+        function openVenmoRequest(venmoUsername, amount, playerName) {
+            const username = venmoUsername.replace('@', '');
+            const note = encodeURIComponent(`EcoPOOL League Buy-In - ${playerName}`);
+            
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            
+            // Deep link for mobile (opens Venmo app with request pre-filled)
+            const deepLink = `venmo://paycharge?txn=charge&recipients=${username}&amount=${amount}&note=${note}`;
+            // Web fallback
+            const webLink = `https://venmo.com/${username}?txn=charge&amount=${amount}&note=${note}`;
+            
+            if (isMobile) {
+                // Try deep link first
+                window.location.href = deepLink;
+                
+                // Fallback to web after 1 second if app doesn't open
+                setTimeout(() => {
+                    window.open(webLink, '_blank');
+                }, 1000);
+            } else {
+                // On desktop, show link options
+                const linkBox = document.getElementById(`link-box-${getPlayerIdByVenmo(venmoUsername)}`);
+                if (linkBox) {
+                    linkBox.classList.add('show');
+                }
+                // Also open the web link
+                window.open(webLink, '_blank');
+            }
+        }
+
+        function getPlayerIdByVenmo(venmo) {
+            const player = playersData.find(p => p.venmo === venmo || p.venmo === venmo.replace('@', ''));
+            return player ? player.id : 0;
+        }
+
+        function toggleVenmoLink(playerId) {
+            const linkBox = document.getElementById(`link-box-${playerId}`);
+            if (linkBox) {
+                linkBox.classList.toggle('show');
+            }
+        }
+
+        function copyLink(playerId) {
+            const input = document.getElementById(`link-input-${playerId}`);
+            if (input) {
+                input.select();
+                document.execCommand('copy');
+                
+                // Visual feedback
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            }
+        }
+
+        async function markPlayerPaid(playerId, playerName) {
+            if (!confirm(`Mark ${playerName} as fully paid for this season?`)) {
+                return;
+            }
+
+            try {
+                // For now, we'll just refresh the data
+                // In a full implementation, this would call an API to mark buy-ins as paid
+                alert(`Payment marked for ${playerName}. Note: This currently requires manual update in the main app.`);
+                refreshData();
+            } catch (err) {
+                alert('Error: ' + err.message);
+            }
+        }
+
+        function refreshData() {
+            document.getElementById('players-list').innerHTML = '<div class="loading">Loading...</div>';
+            loadData();
+        }
+
+        // Check authentication on page load
+        const authTime = sessionStorage.getItem('payment_portal_auth_time');
+        if (!authTime) {
+            window.location.href = '/admin/payments/login';
+        } else {
+            const timeDiff = Date.now() - parseInt(authTime);
+            // Session expires after 2 hours
+            if (timeDiff >= 7200000) {
+                sessionStorage.removeItem('payment_portal_authenticated');
+                sessionStorage.removeItem('payment_portal_auth_time');
+                window.location.href = '/admin/payments/login';
+            }
+        }
+
+        // Initial load
+        loadData();
+
+        // Auto-refresh every 60 seconds
+        setInterval(refreshData, 60000);
+    </script>
+</body>
+</html>

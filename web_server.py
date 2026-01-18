@@ -1220,7 +1220,248 @@ class LiveScoreServer:
                 })
             except Exception as e:
                 return jsonify({'error': str(e)})
+
+        # ============ Payment Admin Panel Routes ============
+
+        @self.app.route('/admin/payments')
+        def payments_admin():
+            """Render the payments admin panel (protected by PIN)."""
+            # Authentication is handled client-side via sessionStorage
+            # The payments_admin.html template will redirect to login if not authenticated
+            return render_template('payments_admin.html')
         
+        @self.app.route('/admin/payments/login')
+        def payments_login():
+            """Render the payment portal login page."""
+            return render_template('payments_login.html')
+        
+        @self.app.route('/api/payments/verify-pin', methods=['POST'])
+        def verify_payment_pin():
+            """Verify payment portal PIN/passcode."""
+            try:
+                data = request.get_json()
+                pin = data.get('pin', '')
+                db = self._get_thread_db()
+                
+                # Get stored payment portal PIN
+                stored_pin = db.get_setting('payment_portal_pin', '')
+                
+                # If no PIN is set, allow any PIN to set it initially
+                if not stored_pin:
+                    # Set the first PIN entered as the PIN
+                    db.set_setting('payment_portal_pin', pin)
+                    return jsonify({'success': True, 'message': 'PIN set successfully'})
+                
+                # Verify PIN
+                if pin == stored_pin:
+                    return jsonify({'success': True})
+                else:
+                    return jsonify({'success': False, 'error': 'Incorrect PIN'})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+        
+        @self.app.route('/api/payments/set-pin', methods=['POST'])
+        def set_payment_pin():
+            """Set or change payment portal PIN (requires manager password)."""
+            try:
+                data = request.get_json()
+                new_pin = data.get('pin', '')
+                manager_password = data.get('manager_password', '')
+                
+                if not new_pin:
+                    return jsonify({'success': False, 'error': 'PIN required'})
+                
+                if len(new_pin) < 4:
+                    return jsonify({'success': False, 'error': 'PIN must be at least 4 characters'})
+                
+                # Verify manager password
+                db = self._get_thread_db()
+                stored_manager_password = db.get_setting('manager_password', '')
+                
+                if not stored_manager_password or manager_password != stored_manager_password:
+                    return jsonify({'success': False, 'error': 'Manager password required'})
+                
+                # Set new PIN
+                db.set_setting('payment_portal_pin', new_pin)
+                
+                return jsonify({'success': True, 'message': 'Payment portal PIN updated'})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+
+        @self.app.route('/api/payments/analytics')
+        def get_payment_analytics():
+            """Get payment analytics data."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                season_id = request.args.get('season_id', type=int)
+                analytics = venmo_mgr.get_payment_analytics(season_id)
+                return jsonify(analytics)
+            except Exception as e:
+                return jsonify({'error': str(e)})
+
+        @self.app.route('/api/payments/season-summary')
+        def get_season_summary():
+            """Get season payment summary."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                season_id = request.args.get('season_id', type=int)
+                summary = venmo_mgr.get_season_summary(season_id)
+                return jsonify(summary)
+            except Exception as e:
+                return jsonify({'error': str(e)})
+
+        @self.app.route('/api/payments/audit-log')
+        def get_audit_log():
+            """Get payment audit log."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                league_night_id = request.args.get('league_night_id', type=int)
+                player_id = request.args.get('player_id', type=int)
+                limit = request.args.get('limit', default=100, type=int)
+                log = venmo_mgr.get_audit_log(league_night_id, player_id, limit)
+                return jsonify({'entries': log})
+            except Exception as e:
+                return jsonify({'error': str(e)})
+
+        @self.app.route('/api/payments/mark-paid', methods=['POST'])
+        def mark_payment_paid():
+            """Mark a payment as paid from web admin."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                data = request.get_json()
+                request_id = data.get('request_id')
+                txn_id = data.get('txn_id')
+                if not request_id:
+                    return jsonify({'success': False, 'error': 'request_id required'})
+                venmo_mgr.mark_as_paid(request_id, txn_id, performed_by='web_admin')
+                return jsonify({'success': True})
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+
+        @self.app.route('/api/payments/all-requests')
+        def get_all_payment_requests():
+            """Get all payment requests for a league night."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                league_night_id = request.args.get('league_night_id', type=int)
+                if not league_night_id:
+                    # Get current league night
+                    night = db.get_current_league_night()
+                    if night:
+                        league_night_id = night['id']
+                    else:
+                        return jsonify({'requests': [], 'error': 'No active league night'})
+                requests = venmo_mgr.get_all_requests(league_night_id)
+                return jsonify({'requests': requests, 'league_night_id': league_night_id})
+            except Exception as e:
+                return jsonify({'error': str(e)})
+
+        @self.app.route('/api/payments/create-request', methods=['POST'])
+        def create_payment_request():
+            """Create a new payment request from web interface."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                
+                data = request.get_json()
+                player_id = data.get('player_id')
+                amount = data.get('amount')
+                note = data.get('note', 'EcoPOOL League Buy-In')
+                
+                if not player_id or not amount:
+                    return jsonify({'success': False, 'error': 'player_id and amount required'})
+                
+                # Get current league night
+                night = db.get_current_league_night()
+                if not night:
+                    return jsonify({'success': False, 'error': 'No active league night'})
+                
+                request_id = venmo_mgr.create_payment_request(
+                    night['id'],
+                    player_id,
+                    float(amount),
+                    note,
+                    performed_by='web_admin'
+                )
+                
+                return jsonify({'success': True, 'request_id': request_id})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+
+        @self.app.route('/api/payments/send-request', methods=['POST'])
+        def send_payment_request():
+            """Send a payment request - returns link to open on client device."""
+            try:
+                from venmo_integration import VenmoIntegration
+                db = self._get_thread_db()
+                venmo_mgr = VenmoIntegration(db)
+                
+                data = request.get_json()
+                request_id = data.get('request_id')
+                
+                if not request_id:
+                    return jsonify({'success': False, 'error': 'request_id required'})
+                
+                # Get request details to return Venmo link
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT pr.*, p.venmo, p.name
+                    FROM payment_requests pr
+                    JOIN players p ON pr.player_id = p.id
+                    WHERE pr.id = ?
+                ''', (request_id,))
+                row = cursor.fetchone()
+                
+                if not row or not row['venmo']:
+                    return jsonify({'success': False, 'error': 'Request not found or player has no Venmo'})
+                
+                username = row['venmo'].lstrip('@')
+                amount = row['amount']
+                note = row['note'] or f"EcoPOOL Buy-In - {row['name']}"
+                
+                # Generate deep link for mobile app (this will open on the CLIENT device)
+                venmo_deep_link = venmo_mgr.generate_request_link(username, amount, note)
+                venmo_web_link = venmo_mgr.generate_web_link(username)
+                
+                # Update status in database (mark as requested)
+                from datetime import datetime
+                cursor.execute('''
+                    UPDATE payment_requests
+                    SET status = 'requested', requested_at = ?
+                    WHERE id = ?
+                ''', (datetime.now().isoformat(), request_id))
+                conn.commit()
+                
+                # Return the links - client JavaScript will open them on the user's device
+                return jsonify({
+                    'success': True,
+                    'venmo_deep_link': venmo_deep_link,
+                    'venmo_link': venmo_web_link,
+                    'message': 'Venmo link generated - will open on your device'
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+
         # Spectator Reactions API endpoints
         @self.app.route('/api/reaction', methods=['POST'])
         def add_reaction():

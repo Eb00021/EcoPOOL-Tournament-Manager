@@ -4,6 +4,8 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![CustomTkinter](https://img.shields.io/badge/GUI-CustomTkinter-green.svg)
+![Version](https://img.shields.io/badge/Version-3.0-orange.svg)
+![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)
 
 ## Features
 
@@ -180,7 +182,7 @@ EcoPOOL Toolkit/
 ├── database.py             # SQLite database (players, matches, games, seasons, league nights, pairs, buy-ins)
 ├── match_generator.py      # Pair and round-based schedule generation
 ├── exporter.py             # PDF, CSV, JSON export/import
-├── web_server.py          # Live scores Flask server (SSE, QR, mobile)
+├── web_server.py           # Live scores Flask server (SSE, QR, mobile manager mode)
 ├── animations.py           # Animated cards, buttons, celebrations
 ├── fonts.py                # Custom fonts
 ├── profile_pictures.py     # Profile picture handling
@@ -188,11 +190,17 @@ EcoPOOL Toolkit/
 ├── advanced_stats.py       # Advanced statistics calculations
 ├── venmo_integration.py    # Venmo payment integration
 ├── spectator_reactions.py  # Spectator reaction system
-├── requirements.txt
-├── profile_pictures/       # Player profile images
+├── requirements.txt        # Python dependencies
 ├── fonts/                  # Custom font files
 ├── templates/              # Web interface HTML templates
-├── static/                 # Web interface CSS and JavaScript
+│   ├── index.html          # Main live scores page
+│   ├── payments_admin.html # Payment admin portal
+│   └── payments_login.html # Payment portal login
+├── static/                 # Web interface assets
+│   ├── css/style.css       # Styles
+│   ├── js/app.js           # JavaScript
+│   ├── fonts/              # Web fonts
+│   └── images/             # Logo and images
 ├── views/
 │   ├── players_view.py
 │   ├── match_generator_view.py
@@ -205,7 +213,8 @@ EcoPOOL Toolkit/
 │   ├── stats_view.py
 │   ├── payments_view.py
 │   └── settings_view.py
-└── (ecopool_league.db created on first run)
+├── profile_pictures/       # Player profile images (created at runtime)
+└── ecopool_league.db       # SQLite database (created on first run)
 ```
 
 ## Database

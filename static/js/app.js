@@ -2,6 +2,125 @@
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
         
+        // ========================================
+        // HAPTIC FEEDBACK SYSTEM
+        // ========================================
+        // Different vibration patterns for various interactions
+        const HapticPatterns = {
+            // Light tap - for small buttons, toggles
+            light: 10,
+            // Medium tap - for important buttons, selections
+            medium: 25,
+            // Strong tap - for confirmations, wins
+            strong: 50,
+            // Double tap pattern - for special actions
+            double: [15, 50, 15],
+            // Success pattern - celebration feel
+            success: [30, 50, 30, 50, 50],
+            // Error pattern - warning feel
+            error: [100, 30, 100],
+            // Ball pocket pattern - satisfying click
+            ballPocket: [5, 30, 10],
+            // Score update - quick pulse
+            score: [20, 20, 20],
+            // Swipe pattern - smooth drag feel
+            swipe: 15,
+            // Modal open - attention grab
+            modalOpen: [10, 30, 20],
+            // Modal close - dismissive
+            modalClose: 20,
+            // Reaction sent - fun burst
+            reaction: [10, 20, 10, 20, 30],
+            // Table tap - pool ball feel
+            tableTap: [8, 40, 15],
+            // Win game - celebration
+            winGame: [50, 50, 50, 100, 50, 50, 50],
+            // Golden break - ultimate celebration
+            goldenBreak: [30, 30, 30, 30, 50, 50, 100, 100],
+            // Button press - subtle feedback
+            button: 12,
+            // Long press - building tension
+            longPress: [10, 10, 10, 10, 10, 30],
+        };
+        
+        // Main haptic feedback function
+        function haptic(pattern = 'light') {
+            if (!navigator.vibrate) return false;
+            
+            try {
+                const vibration = HapticPatterns[pattern] || pattern;
+                navigator.vibrate(vibration);
+                return true;
+            } catch (e) {
+                // Vibration not supported or blocked
+                return false;
+            }
+        }
+        
+        // Quick haptic helpers
+        const hapticLight = () => haptic('light');
+        const hapticMedium = () => haptic('medium');
+        const hapticStrong = () => haptic('strong');
+        const hapticSuccess = () => haptic('success');
+        const hapticError = () => haptic('error');
+        
+        // Auto-add haptic feedback to interactive buttons on touch
+        // Only fires haptic on tap (not scroll) by tracking touch movement
+        let hapticTouchStart = null;
+        const SCROLL_THRESHOLD = 10; // pixels of movement before considered a scroll
+        
+        document.addEventListener('touchstart', function(e) {
+            const target = e.target.closest('button, .reaction-btn, .table-card.live, .manager-ball-btn, .manager-btn, .manager-breaking-btn, .manager-group-btn, .manager-special-btn, .manager-win-btn, .start-match-btn, .complete-match-btn');
+            if (target) {
+                // Store touch info to check on touchend
+                hapticTouchStart = {
+                    target: target,
+                    x: e.touches[0].clientX,
+                    y: e.touches[0].clientY,
+                    time: Date.now()
+                };
+            } else {
+                hapticTouchStart = null;
+            }
+        }, { passive: true });
+        
+        document.addEventListener('touchmove', function(e) {
+            // If touch moved too much, cancel the haptic
+            if (hapticTouchStart && e.touches.length > 0) {
+                const dx = Math.abs(e.touches[0].clientX - hapticTouchStart.x);
+                const dy = Math.abs(e.touches[0].clientY - hapticTouchStart.y);
+                if (dx > SCROLL_THRESHOLD || dy > SCROLL_THRESHOLD) {
+                    hapticTouchStart = null; // Cancel - user is scrolling
+                }
+            }
+        }, { passive: true });
+        
+        document.addEventListener('touchend', function(e) {
+            // Only fire haptic if touch didn't move much (was a tap, not scroll)
+            if (hapticTouchStart) {
+                const target = hapticTouchStart.target;
+                const elapsed = Date.now() - hapticTouchStart.time;
+                
+                // Only fire if it was a quick tap (under 500ms)
+                if (elapsed < 500) {
+                    // Different haptics for different element types
+                    if (target.classList.contains('table-card')) {
+                        haptic('tableTap');
+                    } else if (target.classList.contains('reaction-btn')) {
+                        // Handled separately in sendReaction
+                    } else if (target.classList.contains('manager-ball-btn') || target.classList.contains('manager-ball')) {
+                        haptic('ballPocket');
+                    } else if (target.classList.contains('manager-win-btn') || target.classList.contains('manager-special-btn')) {
+                        haptic('medium');
+                    } else {
+                        haptic('button');
+                    }
+                }
+                
+                hapticTouchStart = null;
+            }
+        }, { passive: true });
+        
         // Prevent double-tap zoom on buttons
         let lastTouchEnd = 0;
         document.addEventListener('touchend', function(event) {
@@ -213,9 +332,15 @@
             if (connected) {
                 dot.classList.remove('disconnected');
                 text.textContent = 'Connected';
+                // Light haptic on reconnection (only if we were disconnected)
+                if (text.dataset.wasDisconnected) {
+                    haptic('light');
+                    text.dataset.wasDisconnected = '';
+                }
             } else {
                 dot.classList.add('disconnected');
                 text.textContent = 'Reconnecting...';
+                text.dataset.wasDisconnected = 'true';
             }
         }
         
@@ -284,7 +409,12 @@
                 html += `
                     <div class="section">
                         <div id="manager-panel" class="manager-panel active">
-                            <h2 style="margin-bottom: 15px;">🔧 Manager Mode - Score Entry</h2>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h2 style="margin: 0;">🔧 Manager Mode - Score Entry</h2>
+                                <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                    💳 Payment Portal
+                                </button>
+                            </div>
                             
                             <div class="manager-match-selector">
                                 <label style="display: block; margin-bottom: 8px; font-weight: bold;">Select Match:</label>
@@ -591,6 +721,9 @@
             const content = document.getElementById('scorecard-content');
             const reactionBar = document.querySelector('.reaction-bar');
             
+            // Haptic feedback - modal opening
+            haptic('modalOpen');
+            
             // Track which match is open
             openScorecardMatchId = matchId;
             openScorecardIsManager = isManagerMode;
@@ -824,7 +957,7 @@
                 
                 return `
                     <div class="manager-ball-btn ${stateClass} ${ballColorClass}" 
-                         onclick="cycleBallState(${match.id}, ${game.game_number}, ${ballNum}, ${pocketedBy || 0})"
+                         onclick="cycleBallState(${match.id}, ${game.game_number}, ${ballNum}, ${pocketedBy || 0}, '${game.team1_group || ''}')"
                          title="Ball ${ballNum}">
                         <div class="ball-inner ${ballColorClass}">
                             <span class="ball-num">${ballNum}</span>
@@ -1043,17 +1176,15 @@
             `;
         }
         
-        function cycleBallState(matchId, gameNumber, ballNum, currentState) {
+        function cycleBallState(matchId, gameNumber, ballNum, currentState, team1Group) {
             // Check if user is authenticated as manager (either via full manager mode or scorecard manager mode)
             if (!managerAuthenticated && !openScorecardIsManager) {
                 console.log('Not authenticated for manager mode');
                 return;
             }
             
-            // Haptic feedback on mobile
-            if (navigator.vibrate) {
-                navigator.vibrate(10);
-            }
+            // Haptic feedback on mobile - satisfying ball pocket feel
+            haptic('ballPocket');
             
             const password = sessionStorage.getItem('manager_password');
             if (!password) {
@@ -1061,10 +1192,28 @@
                 return;
             }
             
-            // Cycle: 0 (on table) -> 1 (team 1) -> 2 (team 2) -> 0 (on table)
+            // Determine ball type
+            const isSolid = ballNum >= 1 && ballNum <= 7;
+            const isStripe = ballNum >= 9 && ballNum <= 15;
+            const is8Ball = ballNum === 8;
+            
+            // Cycle: 0 (on table) -> correct team -> other team -> 0 (on table)
+            // If group is assigned, first click goes to the team that owns that ball type
             let newTeam = 0;
             if (currentState === 0 || !currentState) {
-                newTeam = 1;
+                // First click - assign to correct team based on ball type and group
+                if (team1Group && !is8Ball) {
+                    if (team1Group === 'solids') {
+                        // Team 1 has solids, Team 2 has stripes
+                        newTeam = isSolid ? 1 : 2;
+                    } else if (team1Group === 'stripes') {
+                        // Team 1 has stripes, Team 2 has solids
+                        newTeam = isStripe ? 1 : 2;
+                    }
+                } else {
+                    // No group assigned yet, default to team 1
+                    newTeam = 1;
+                }
             } else if (currentState === 1) {
                 newTeam = 2;
             } else if (currentState === 2) {
@@ -1087,11 +1236,13 @@
                 if (data.success) {
                     // Show notification if group was auto-assigned
                     if (data.group_changed) {
+                        haptic('success');
                         const groupText = data.team1_group === 'solids' ? 'Team 1: Solids, Team 2: Stripes' : 'Team 1: Stripes, Team 2: Solids';
                         showToast(`🎱 Groups assigned! ${groupText}`);
                     }
                     // Check for illegal 8-ball
                     if (data.illegal_8ball) {
+                        haptic('error');
                         if (data.early_8ball_on_break) {
                             showToast(`❌ 8-ball on the break! Team ${data.losing_team} loses. Team ${data.winning_team} wins!`);
                         } else {
@@ -1101,6 +1252,7 @@
                     // Refresh scorecard immediately for responsive UX
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to update ball'));
                 }
             })
@@ -1141,7 +1293,7 @@
         
         // Legacy function - redirect to new cycle function
         function clickBallInScorecard(matchId, gameNumber, ballNum) {
-            cycleBallState(matchId, gameNumber, ballNum, 0);
+            cycleBallState(matchId, gameNumber, ballNum, 0, '');
         }
         
         function toggleBallInScorecard(matchId, gameNumber, ballNum, currentTeam) {
@@ -1179,6 +1331,9 @@
         }
         
         function closeModal() {
+            // Haptic feedback - modal closing
+            haptic('modalClose');
+            
             document.getElementById('scorecard-modal').classList.remove('active');
             openScorecardMatchId = null;  // Clear tracking when modal closes
             openScorecardIsManager = false;
@@ -1217,6 +1372,7 @@
                 
                 // Close if swiped down more than 100px in less than 300ms
                 if (swipeDistance > 100 && touchDuration < 300) {
+                    haptic('swipe');
                     closeModal();
                 }
                 modalTouchStartY = 0;
@@ -1252,6 +1408,9 @@
         
         // Manager Mode Functions
         function toggleManagerMode() {
+            // Haptic feedback for mode toggle
+            haptic('medium');
+            
             if (managerMode) {
                 managerMode = false;
                 managerAuthenticated = false;
@@ -1283,6 +1442,9 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    // Success haptic - authenticated!
+                    haptic('success');
+                    
                     managerAuthenticated = true;
                     managerMode = true;
                     lastMainUIHash = null;  // Reset to force UI redraw with manager panel
@@ -1297,6 +1459,8 @@
                         .then(updateUI)
                         .catch(console.error);
                 } else {
+                    // Error haptic - wrong password
+                    haptic('error');
                     alert('Incorrect password. Manager Mode access denied.');
                 }
             })
@@ -1306,6 +1470,11 @@
             });
         }
         
+        function openPaymentPortal() {
+            // Open payment portal in new tab/window
+            window.open('/admin/payments/login', '_blank');
+        }
+
         function loadManagerMatches() {
             fetch('/api/scores')
                 .then(r => r.json())
@@ -1475,6 +1644,8 @@
             
             if (!confirm(`Mark this match as complete and free Table ${tableNumber}?`)) return;
             
+            haptic('medium');
+            
             fetch('/api/manager/complete-match', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1486,6 +1657,7 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    haptic('success');
                     showToast(`✅ Match completed! Table ${tableNumber} is now available.`);
                     // Reset the queue panel hash to force refresh
                     lastQueuePanelHash = '';
@@ -1495,11 +1667,13 @@
                         .then(updateUI)
                         .catch(console.error);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to complete match'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to complete match');
             });
         }
@@ -1518,6 +1692,8 @@
             
             if (!confirm(`Start this match on Table ${tableNumber}?`)) return;
             
+            haptic('medium');
+            
             fetch('/api/manager/start-match', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1530,6 +1706,7 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    haptic('success');
                     showToast(`✅ Match started on Table ${tableNumber}!`);
                     // Refresh both the main UI and queue panel
                     fetch('/api/scores')
@@ -1537,11 +1714,13 @@
                         .then(updateUI)
                         .catch(console.error);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to start match'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to start match');
             });
         }
@@ -1631,10 +1810,8 @@
         function toggleManagerBall(ballNum) {
             if (!managerAuthenticated || !currentManagerMatch || !currentManagerGame) return;
             
-            // Haptic feedback on mobile
-            if (navigator.vibrate) {
-                navigator.vibrate(10);
-            }
+            // Haptic feedback on mobile - ball pocket feel
+            haptic('ballPocket');
             
             const password = sessionStorage.getItem('manager_password');
             const balls = JSON.parse(currentManagerGame.balls_pocketed || '{}');
@@ -1683,6 +1860,8 @@
             
             if (!confirm(`Confirm: Team ${winningTeam} wins this game?`)) return;
             
+            haptic('strong');
+            
             const password = sessionStorage.getItem('manager_password');
             
             fetch('/api/manager/win-game', {
@@ -1698,6 +1877,7 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    haptic('winGame');
                     alert('Game marked as won!');
                     loadManagerMatch();
                     // Refresh scorecard if open
@@ -1705,11 +1885,13 @@
                         setTimeout(() => refreshOpenScorecard(), 100);
                     }
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to mark game as won'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to mark game as won');
             });
         }
@@ -1729,6 +1911,8 @@
             
             if (!confirm(`Confirm: Team ${winningTeam} wins this game?`)) return;
             
+            haptic('strong');
+            
             fetch('/api/manager/win-game', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1742,20 +1926,26 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    haptic('winGame');
                     alert('Game marked as won!');
                     // Refresh the scorecard
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to mark game as won'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to mark game as won');
             });
         }
         
         function setBreakingTeam(matchId, gameNumber, breakingTeam) {
+            // Haptic feedback for selection
+            haptic('medium');
+            
             // Set which team is breaking/shooting first
             if (!managerAuthenticated && !openScorecardIsManager) {
                 alert('Manager mode not authenticated');
@@ -1794,6 +1984,9 @@
         }
         
         function setGroupAssignment(matchId, gameNumber, team1Group) {
+            // Haptic feedback for selection
+            haptic('medium');
+            
             // Set which team has solids vs stripes
             if (!managerAuthenticated && !openScorecardIsManager) {
                 alert('Manager mode not authenticated');
@@ -1846,6 +2039,8 @@
             
             if (!confirm(`Confirm: Team ${winningTeam} got a GOLDEN BREAK! They win this game instantly.`)) return;
             
+            haptic('strong');
+            
             fetch('/api/manager/set-golden-break', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1860,14 +2055,18 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    // Ultimate celebration haptic for golden break!
+                    haptic('goldenBreak');
                     alert('⭐ Golden Break! Game won!');
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to set golden break'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to set golden break');
             });
         }
@@ -1888,6 +2087,8 @@
             const winningTeam = losingTeam === 1 ? 2 : 1;
             if (!confirm(`Confirm: Team ${losingTeam} scratched on the 8-ball. Team ${winningTeam} wins!`)) return;
             
+            haptic('strong');
+            
             fetch('/api/manager/set-early-8ball', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1901,14 +2102,18 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    // Error/scratch haptic pattern
+                    haptic('error');
                     alert('❌ Early 8-ball! Game over.');
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to set early 8-ball'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to set early 8-ball');
             });
         }
@@ -1928,6 +2133,8 @@
             
             if (!confirm('Reset the table? This will clear all balls and scores for this game.')) return;
             
+            haptic('medium');
+            
             fetch('/api/manager/reset-table', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1940,14 +2147,17 @@
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
+                    haptic('double');
                     showToast('🔄 Table reset! All balls back on table.');
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
+                    haptic('error');
                     alert('Error: ' + (data.error || 'Failed to reset table'));
                 }
             })
             .catch(err => {
                 console.error('Error:', err);
+                haptic('error');
                 alert('Failed to reset table');
             });
         }
@@ -1979,14 +2189,14 @@
         
         // Spectator Reactions Functions
         let reactionCooldown = false;
-        
+        let pendingReactionType = null;  // Track type before SSE arrives
+        let lastLocalReactionId = null;  // Track to avoid showing duplicates from SSE
+
         function sendReaction(type, event) {
             if (reactionCooldown) return;
             
-            // Haptic feedback on mobile
-            if (navigator.vibrate) {
-                navigator.vibrate(15);
-            }
+            // Haptic feedback on mobile - fun reaction pattern
+            haptic('reaction');
             
             reactionCooldown = true;
             setTimeout(() => reactionCooldown = false, 2000);
@@ -2005,6 +2215,9 @@
                 });
             }
             
+            // Track pending type so SSE can use it if it arrives first
+            pendingReactionType = type;
+
             fetch('/api/reaction', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -2013,23 +2226,49 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showLocalReaction(data.reaction.emoji);
+                    // Track this reaction ID so SSE doesn't show it again
+                    lastLocalReactionId = data.reaction.id;
+                    // Only show if SSE hasn't already shown it
+                    if (pendingReactionType) {
+                        showLocalReaction(data.reaction.emoji);
+                        pendingReactionType = null;
+                    }
                 } else {
                     console.log('Reaction failed:', data.error);
+                    pendingReactionType = null;
                 }
             })
-            .catch(err => console.log('Reaction error:', err));
+            .catch(err => {
+                console.log('Reaction error:', err);
+                pendingReactionType = null;
+            });
         }
         
         function showLocalReaction(emoji) {
+            // Light haptic when reactions appear on screen
+            haptic('light');
+            
             const overlay = document.getElementById('reactionOverlay');
             const reaction = document.createElement('div');
             reaction.className = 'floating-reaction';
-            reaction.textContent = emoji;
+
+            // Always use actual car image for car emoji (check multiple ways for unicode reliability)
+            const isCarEmoji = emoji === '🚗' || emoji.includes('🚗') || emoji.codePointAt(0) === 0x1F697;
+            if (isCarEmoji) {
+                const img = document.createElement('img');
+                img.src = '/static/images/ecoREACTION.png';
+                img.alt = 'EcoCAR';
+                img.style.width = '48px';
+                img.style.height = 'auto';
+                reaction.appendChild(img);
+            } else {
+                reaction.textContent = emoji;
+            }
+
             reaction.style.left = (Math.random() * 80 + 10) + '%';
             reaction.style.bottom = '100px';
             overlay.appendChild(reaction);
-            
+
             setTimeout(() => reaction.remove(), 3000);
         }
         
@@ -2041,6 +2280,16 @@
                     // Show the latest reaction
                     const latest = data.reactions[data.reactions.length - 1];
                     if (latest) {
+                        // Skip if we already showed this reaction locally
+                        if (latest.id === lastLocalReactionId) {
+                            lastLocalReactionId = null;
+                            return;
+                        }
+
+                        // Clear pending flag so POST response doesn't double-show
+                        if (pendingReactionType) {
+                            pendingReactionType = null;
+                        }
                         showLocalReaction(latest.emoji);
                     }
                 }

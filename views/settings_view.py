@@ -15,9 +15,13 @@ from fonts import get_font
 class SettingsView(ctk.CTkFrame):
     """View for application settings."""
 
-    def __init__(self, parent, db: DatabaseManager):
+    def __init__(self, parent, db: DatabaseManager, exporter=None, 
+                 on_new_pool_night=None, on_data_change=None):
         super().__init__(parent, fg_color='transparent')
         self.db = db
+        self.exporter = exporter
+        self.on_new_pool_night = on_new_pool_night
+        self.on_data_change = on_data_change
 
         self.setup_ui()
 
@@ -28,7 +32,7 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             header,
-            text='⚙️ Settings',
+            text='Settings',
             font=get_font(28, 'bold')
         ).pack(side='left')
 
@@ -37,7 +41,7 @@ class SettingsView(ctk.CTkFrame):
         content.pack(fill='both', expand=True, padx=20, pady=10)
 
         # ========== Venmo Section ==========
-        self._create_section(content, '💳 Venmo Settings')
+        self._create_section(content, 'Venmo Settings')
 
         venmo_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
         venmo_card.pack(fill='x', pady=10)
@@ -124,7 +128,7 @@ class SettingsView(ctk.CTkFrame):
         ).pack(side='left', padx=5)
 
         # ========== Manager Password Section ==========
-        self._create_section(content, '🔐 Manager Password')
+        self._create_section(content, 'Manager Password')
 
         manager_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
         manager_card.pack(fill='x', pady=10)
@@ -182,8 +186,151 @@ class SettingsView(ctk.CTkFrame):
         )
         self.password_status_label.pack(anchor='w', pady=(5, 0))
 
+        # ========== Payment Portal PIN Section ==========
+        self._create_section(content, 'Payment Portal PIN')
+
+        payment_pin_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
+        payment_pin_card.pack(fill='x', pady=10)
+
+        payment_pin_inner = ctk.CTkFrame(payment_pin_card, fg_color='transparent')
+        payment_pin_inner.pack(fill='x', padx=20, pady=15)
+
+        ctk.CTkLabel(
+            payment_pin_inner,
+            text='Payment Portal PIN',
+            font=get_font(14, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkLabel(
+            payment_pin_inner,
+            text='PIN/passcode for accessing the payment admin portal on the web interface',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        pin_row = ctk.CTkFrame(payment_pin_inner, fg_color='transparent')
+        pin_row.pack(fill='x', pady=10)
+
+        self.payment_pin_var = ctk.StringVar(value='')
+        payment_pin_entry = ctk.CTkEntry(
+            pin_row,
+            textvariable=self.payment_pin_var,
+            height=40,
+            width=200,
+            font=get_font(14),
+            placeholder_text='Enter new PIN',
+            show='*'
+        )
+        payment_pin_entry.pack(side='left', padx=5)
+
+        ctk.CTkButton(
+            pin_row,
+            text='Change PIN',
+            font=get_font(12),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=140,
+            command=self._change_payment_pin
+        ).pack(side='left', padx=10)
+
+        # Show current PIN status
+        current_pin = self.db.get_setting('payment_portal_pin', '')
+        pin_status = 'Set' if current_pin else 'Not set'
+        self.pin_status_label = ctk.CTkLabel(
+            payment_pin_inner,
+            text=f'Current status: {pin_status}',
+            font=get_font(11),
+            text_color='#888888'
+        )
+        self.pin_status_label.pack(anchor='w', pady=(5, 0))
+
+        # ========== Season Management Section ==========
+        self._create_section(content, 'Season Management')
+
+        season_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
+        season_card.pack(fill='x', pady=10)
+
+        season_inner = ctk.CTkFrame(season_card, fg_color='transparent')
+        season_inner.pack(fill='x', padx=20, pady=15)
+
+        # Current season display
+        active_season = self.db.get_active_season()
+        season_text = active_season.name if active_season else 'No active season'
+        
+        ctk.CTkLabel(
+            season_inner,
+            text='Current Season',
+            font=get_font(14, 'bold')
+        ).pack(anchor='w')
+
+        self.current_season_label = ctk.CTkLabel(
+            season_inner,
+            text=season_text,
+            font=get_font(12),
+            text_color='#4CAF50' if active_season else '#ff6b6b'
+        )
+        self.current_season_label.pack(anchor='w', pady=(2, 10))
+
+        # Create new season
+        ctk.CTkLabel(
+            season_inner,
+            text='Create New Season',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(10, 5))
+
+        new_season_row = ctk.CTkFrame(season_inner, fg_color='transparent')
+        new_season_row.pack(fill='x', pady=5)
+
+        self.new_season_var = ctk.StringVar(value='')
+        ctk.CTkEntry(
+            new_season_row,
+            textvariable=self.new_season_var,
+            height=40,
+            width=200,
+            font=get_font(14),
+            placeholder_text='Season name (e.g., Spring 2026)'
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            new_season_row,
+            text='Create Season',
+            font=get_font(12),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=140,
+            command=self._create_season
+        ).pack(side='left')
+
+        # Season actions
+        season_actions = ctk.CTkFrame(season_inner, fg_color='transparent')
+        season_actions.pack(fill='x', pady=10)
+
+        ctk.CTkButton(
+            season_actions,
+            text='Switch Season',
+            font=get_font(11),
+            fg_color='#3d5a80',
+            hover_color='#2d4a70',
+            height=35,
+            width=120,
+            command=self._switch_season
+        ).pack(side='left', padx=(0, 5))
+
+        ctk.CTkButton(
+            season_actions,
+            text='End Current Season',
+            font=get_font(11),
+            fg_color='#c44536',
+            hover_color='#a43526',
+            height=35,
+            width=150,
+            command=self._end_season
+        ).pack(side='left', padx=5)
+
         # ========== Data Management Section ==========
-        self._create_section(content, '💾 Data Management')
+        self._create_section(content, 'Data Management')
 
         data_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
         data_card.pack(fill='x', pady=10)
@@ -191,7 +338,97 @@ class SettingsView(ctk.CTkFrame):
         data_inner = ctk.CTkFrame(data_card, fg_color='transparent')
         data_inner.pack(fill='x', padx=20, pady=15)
 
-        # Auto backup
+        # New Pool Night button
+        ctk.CTkLabel(
+            data_inner,
+            text='Pool Night',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkButton(
+            data_inner,
+            text='New Pool Night',
+            font=get_font(12),
+            fg_color='#c44536',
+            hover_color='#a43526',
+            height=40,
+            command=self._new_pool_night
+        ).pack(anchor='w', pady=(5, 15))
+
+        # Matches section
+        ctk.CTkLabel(
+            data_inner,
+            text='Match History',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w')
+
+        matches_btns = ctk.CTkFrame(data_inner, fg_color='transparent')
+        matches_btns.pack(fill='x', pady=5)
+
+        ctk.CTkButton(
+            matches_btns,
+            text='Save Matches',
+            font=get_font(11),
+            fg_color='#3d5a80',
+            hover_color='#2d4a70',
+            height=35,
+            width=130,
+            command=self._save_matches
+        ).pack(side='left', padx=(0, 5))
+
+        ctk.CTkButton(
+            matches_btns,
+            text='Load Matches',
+            font=get_font(11),
+            fg_color='#3d5a80',
+            hover_color='#2d4a70',
+            height=35,
+            width=130,
+            command=self._load_matches
+        ).pack(side='left', padx=5)
+
+        # Players section
+        ctk.CTkLabel(
+            data_inner,
+            text='Player Data',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(15, 0))
+
+        players_btns = ctk.CTkFrame(data_inner, fg_color='transparent')
+        players_btns.pack(fill='x', pady=5)
+
+        ctk.CTkButton(
+            players_btns,
+            text='Export Players',
+            font=get_font(11),
+            fg_color='#6b4e8a',
+            hover_color='#5b3e7a',
+            height=35,
+            width=130,
+            command=self._export_players
+        ).pack(side='left', padx=(0, 5))
+
+        ctk.CTkButton(
+            players_btns,
+            text='Import Players',
+            font=get_font(11),
+            fg_color='#6b4e8a',
+            hover_color='#5b3e7a',
+            height=35,
+            width=130,
+            command=self._import_players
+        ).pack(side='left', padx=5)
+
+        # Separator
+        ctk.CTkFrame(data_inner, height=1, fg_color='#444444').pack(fill='x', pady=15)
+
+        # Auto backup toggle
+        ctk.CTkLabel(
+            data_inner,
+            text='Database Backup',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w')
+
         backup_toggle = ctk.CTkFrame(data_inner, fg_color='transparent')
         backup_toggle.pack(fill='x', pady=5)
 
@@ -201,7 +438,7 @@ class SettingsView(ctk.CTkFrame):
         ctk.CTkLabel(
             backup_toggle,
             text='Auto-backup on exit',
-            font=get_font(13)
+            font=get_font(12)
         ).pack(side='left')
 
         ctk.CTkSwitch(
@@ -215,35 +452,35 @@ class SettingsView(ctk.CTkFrame):
 
         # Backup buttons
         backup_btns = ctk.CTkFrame(data_inner, fg_color='transparent')
-        backup_btns.pack(fill='x', pady=15)
+        backup_btns.pack(fill='x', pady=10)
 
         ctk.CTkButton(
             backup_btns,
-            text='📥 Create Backup',
-            font=get_font(12),
+            text='Create Backup',
+            font=get_font(11),
             fg_color='#3d5a80',
             hover_color='#2d4a70',
-            height=40,
+            height=35,
             command=self._create_backup
-        ).pack(side='left', padx=5)
+        ).pack(side='left', padx=(0, 5))
 
         ctk.CTkButton(
             backup_btns,
-            text='📤 Restore Backup',
-            font=get_font(12),
+            text='Restore Backup',
+            font=get_font(11),
             fg_color='#6b4e8a',
             hover_color='#5b3e7a',
-            height=40,
+            height=35,
             command=self._restore_backup
         ).pack(side='left', padx=5)
 
         ctk.CTkButton(
             backup_btns,
-            text='📁 Open Data Folder',
-            font=get_font(12),
+            text='Open Folder',
+            font=get_font(11),
             fg_color='#555555',
             hover_color='#444444',
-            height=40,
+            height=35,
             command=self._open_data_folder
         ).pack(side='left', padx=5)
 
@@ -258,7 +495,7 @@ class SettingsView(ctk.CTkFrame):
         self.backup_label.pack(anchor='w')
 
         # ========== About Section ==========
-        self._create_section(content, 'ℹ️ About')
+        self._create_section(content, 'About')
 
         about_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
         about_card.pack(fill='x', pady=10)
@@ -274,7 +511,7 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             about_inner,
-            text='Version 2.0',
+            text='Version 3.0',
             font=get_font(12),
             text_color='#888888'
         ).pack(anchor='w')
@@ -300,6 +537,102 @@ class SettingsView(ctk.CTkFrame):
             text=title,
             font=get_font(16, 'bold')
         ).pack(anchor='w', pady=(20, 5))
+
+    def _new_pool_night(self):
+        """Start a new pool night."""
+        if self.on_new_pool_night:
+            self.on_new_pool_night()
+        else:
+            # Fallback if no callback provided
+            if messagebox.askyesno(
+                "New Pool Night",
+                "This will clear the current league night setup.\n\n"
+                "COMPLETED games will be KEPT for the leaderboard.\n"
+                "Only incomplete matches will be removed.\n\n"
+                "Continue?"
+            ):
+                self.db.clear_matches(keep_completed=True)
+                messagebox.showinfo("Success", "New pool night started!")
+                if self.on_data_change:
+                    self.on_data_change()
+
+    def _save_matches(self):
+        """Save match history to JSON file."""
+        if not self.exporter:
+            messagebox.showerror("Error", "Exporter not available")
+            return
+            
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Save Match History",
+            initialfile="ecopool_matches_backup.json"
+        )
+        
+        if filepath:
+            if self.exporter.export_matches_json(filepath):
+                messagebox.showinfo("Success", f"Match history saved to:\n{filepath}")
+            else:
+                messagebox.showerror("Error", "Failed to save match history.")
+
+    def _load_matches(self):
+        """Load match history from JSON file."""
+        if not self.exporter:
+            messagebox.showerror("Error", "Exporter not available")
+            return
+            
+        filepath = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json")],
+            title="Load Match History"
+        )
+        
+        if filepath:
+            success, message = self.exporter.import_matches_json(filepath)
+            if success:
+                messagebox.showinfo("Success", message)
+                if self.on_data_change:
+                    self.on_data_change()
+            else:
+                messagebox.showerror("Error", message)
+
+    def _export_players(self):
+        """Export player database to JSON file."""
+        if not self.exporter:
+            messagebox.showerror("Error", "Exporter not available")
+            return
+            
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Export Players",
+            initialfile="ecopool_players.json"
+        )
+        
+        if filepath:
+            if self.exporter.export_players_json(filepath):
+                messagebox.showinfo("Success", f"Players exported to:\n{filepath}")
+            else:
+                messagebox.showerror("Error", "Failed to export players.")
+
+    def _import_players(self):
+        """Import players from JSON file."""
+        if not self.exporter:
+            messagebox.showerror("Error", "Exporter not available")
+            return
+            
+        filepath = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json")],
+            title="Import Players"
+        )
+        
+        if filepath:
+            success, message = self.exporter.import_players_json(filepath)
+            if success:
+                messagebox.showinfo("Success", message)
+                if self.on_data_change:
+                    self.on_data_change()
+            else:
+                messagebox.showerror("Error", message)
 
     def _save_venmo(self):
         """Save organizer Venmo username."""
@@ -338,6 +671,29 @@ class SettingsView(ctk.CTkFrame):
             self.manager_password_var.set('')
             self.password_status_label.configure(text='Current status: Set')
             messagebox.showinfo("Success", "Manager password has been changed successfully")
+
+    def _change_payment_pin(self):
+        """Change payment portal PIN for web interface."""
+        new_pin = self.payment_pin_var.get().strip()
+        
+        if not new_pin:
+            messagebox.showerror("Error", "PIN cannot be empty")
+            return
+        
+        if len(new_pin) < 4:
+            messagebox.showerror("Error", "PIN must be at least 4 characters")
+            return
+        
+        # Confirm PIN change
+        if messagebox.askyesno(
+            "Confirm PIN Change",
+            "Are you sure you want to change the payment portal PIN?\n\n"
+            "This will affect access to the payment admin portal on the web interface."
+        ):
+            self.db.set_setting('payment_portal_pin', new_pin)
+            self.payment_pin_var.set('')
+            self.pin_status_label.configure(text='Current status: Set')
+            messagebox.showinfo("Success", "Payment portal PIN has been changed successfully")
 
     def _create_backup(self):
         """Create a database backup."""
@@ -393,3 +749,155 @@ class SettingsView(ctk.CTkFrame):
             os.startfile(folder)
         except:
             messagebox.showinfo("Data Location", f"Database location:\n{self.db.db_path}")
+
+    def _create_season(self):
+        """Create a new season."""
+        name = self.new_season_var.get().strip()
+        
+        if not name:
+            messagebox.showerror("Error", "Please enter a season name")
+            return
+        
+        # Confirm creation
+        if messagebox.askyesno(
+            "Create Season",
+            f"Create new season '{name}'?\n\n"
+            "This will become the active season."
+        ):
+            try:
+                start_date = datetime.now().strftime('%Y-%m-%d')
+                season_id = self.db.create_season(name, start_date)
+                self.db.set_active_season(season_id)
+                
+                # Update display
+                self.current_season_label.configure(text=name, text_color='#4CAF50')
+                self.new_season_var.set('')
+                
+                messagebox.showinfo("Success", f"Season '{name}' created and set as active!")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create season:\n{str(e)}")
+
+    def _switch_season(self):
+        """Switch to a different season."""
+        seasons = self.db.get_all_seasons()
+        
+        if not seasons:
+            messagebox.showinfo("No Seasons", "No seasons found. Create a season first.")
+            return
+        
+        # Create a dialog to select season
+        dialog = ctk.CTkToplevel(self)
+        dialog.title('Switch Season')
+        dialog.geometry('400x450')
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        
+        # Center
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - 200
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - 225
+        dialog.geometry(f'+{x}+{y}')
+        
+        ctk.CTkLabel(
+            dialog,
+            text='Select Season',
+            font=get_font(18, 'bold')
+        ).pack(pady=(20, 10))
+        
+        # Scrollable list of seasons
+        seasons_frame = ctk.CTkScrollableFrame(dialog, height=300)
+        seasons_frame.pack(fill='x', padx=20, pady=10)
+        
+        active_season = self.db.get_active_season()
+        selected_var = ctk.IntVar(value=active_season.id if active_season else 0)
+        
+        for season in seasons:
+            is_active = active_season and season.id == active_season.id
+            status = " (Active)" if is_active else ""
+            end_status = " [Ended]" if season.end_date else ""
+            
+            row = ctk.CTkFrame(seasons_frame, fg_color='transparent')
+            row.pack(fill='x', pady=2)
+            
+            ctk.CTkRadioButton(
+                row,
+                text=f"{season.name}{status}{end_status}",
+                variable=selected_var,
+                value=season.id,
+                font=get_font(13),
+                fg_color='#4CAF50'
+            ).pack(side='left', padx=5)
+            
+            ctk.CTkLabel(
+                row,
+                text=season.start_date or '',
+                font=get_font(10),
+                text_color='#888888'
+            ).pack(side='right', padx=10)
+        
+        def do_switch():
+            season_id = selected_var.get()
+            if season_id:
+                self.db.set_active_season(season_id)
+                # Find the season name
+                for s in seasons:
+                    if s.id == season_id:
+                        self.current_season_label.configure(text=s.name, text_color='#4CAF50')
+                        break
+                dialog.destroy()
+                messagebox.showinfo("Success", "Active season changed!")
+        
+        btn_frame = ctk.CTkFrame(dialog, fg_color='transparent')
+        btn_frame.pack(pady=15)
+        
+        ctk.CTkButton(
+            btn_frame,
+            text='Cancel',
+            font=get_font(12),
+            fg_color='#555555',
+            hover_color='#444444',
+            width=100,
+            height=35,
+            command=dialog.destroy
+        ).pack(side='left', padx=10)
+        
+        ctk.CTkButton(
+            btn_frame,
+            text='Switch',
+            font=get_font(12, 'bold'),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            width=100,
+            height=35,
+            command=do_switch
+        ).pack(side='left', padx=10)
+
+    def _end_season(self):
+        """End the current season."""
+        active_season = self.db.get_active_season()
+        
+        if not active_season:
+            messagebox.showinfo("No Active Season", "No active season to end.")
+            return
+        
+        if active_season.end_date:
+            messagebox.showinfo("Already Ended", f"Season '{active_season.name}' has already ended.")
+            return
+        
+        if messagebox.askyesno(
+            "End Season",
+            f"End season '{active_season.name}'?\n\n"
+            "This will mark the season as complete.\n"
+            "All stats and leaderboard data will be preserved.\n\n"
+            "You can still create a new season afterwards."
+        ):
+            try:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+                self.db.end_season(active_season.id, end_date)
+                self.current_season_label.configure(
+                    text=f"{active_season.name} (Ended)",
+                    text_color='#888888'
+                )
+                messagebox.showinfo("Success", f"Season '{active_season.name}' has been ended.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to end season:\n{str(e)}")

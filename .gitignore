@@ -15,6 +15,7 @@ env/
 .vscode/
 *.swp
 *.swo
+*.code-workspace
 
 # PyInstaller
 build/
@@ -24,6 +25,7 @@ dist/
 # Database
 *.db
 *.db-journal
+*.db.before_restore
 
 # SSL certificates
 ssl_certs/
@@ -31,9 +33,24 @@ ssl_certs/
 # User data
 profile_pictures/
 
+# Backups
+*_backup_*.json
+*_backup_*.db
+backups/
+
 # OS files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Cache
+.cache/
+*.cache

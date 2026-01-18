@@ -58,6 +58,26 @@ class VenmoIntegration:
             )
         ''')
 
+        # Payment audit log table for tracking all changes
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payment_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payment_request_id INTEGER,
+                league_night_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                old_status TEXT,
+                new_status TEXT,
+                amount REAL,
+                note TEXT,
+                performed_by TEXT DEFAULT 'system',
+                performed_at TEXT NOT NULL,
+                details TEXT,
+                FOREIGN KEY (league_night_id) REFERENCES league_nights(id),
+                FOREIGN KEY (player_id) REFERENCES players(id)
+            )
+        ''')
+
         conn.commit()
 
     # ============ Deep Link Generation ============
@@ -143,7 +163,8 @@ class VenmoIntegration:
     # ============ Payment Request Management ============
 
     def create_payment_request(self, league_night_id: int, player_id: int,
-                               amount: float, note: str = None) -> int:
+                               amount: float, note: str = None,
+                               performed_by: str = 'system') -> int:
         """Create a new payment request record.
 
         Returns:
@@ -161,7 +182,21 @@ class VenmoIntegration:
         ''', (league_night_id, player_id, amount, note))
 
         conn.commit()
-        return cursor.lastrowid
+        request_id = cursor.lastrowid
+
+        # Log to audit trail
+        self._log_audit(
+            payment_request_id=request_id,
+            league_night_id=league_night_id,
+            player_id=player_id,
+            action='created',
+            new_status='pending',
+            amount=amount,
+            note=note,
+            performed_by=performed_by
+        )
+
+        return request_id
 
     def send_payment_request(self, request_id: int) -> bool:
         """Mark a payment request as sent and open Venmo.
@@ -244,10 +279,24 @@ class VenmoIntegration:
                 except Exception:
                     return False
 
-    def mark_as_paid(self, request_id: int, txn_id: str = None):
+    def mark_as_paid(self, request_id: int, txn_id: str = None, performed_by: str = 'system'):
         """Mark a payment request as paid."""
         conn = self.db.get_connection()
         cursor = conn.cursor()
+
+        # Get current info for audit log
+        cursor.execute('''
+            SELECT pr.*, p.name as player_name
+            FROM payment_requests pr
+            JOIN players p ON pr.player_id = p.id
+            WHERE pr.id = ?
+        ''', (request_id,))
+        request = cursor.fetchone()
+
+        if not request:
+            return
+
+        old_status = request['status']
 
         cursor.execute('''
             UPDATE payment_requests
@@ -257,13 +306,21 @@ class VenmoIntegration:
 
         conn.commit()
 
+        # Log to audit trail
+        self._log_audit(
+            payment_request_id=request_id,
+            league_night_id=request['league_night_id'],
+            player_id=request['player_id'],
+            action='marked_paid',
+            old_status=old_status,
+            new_status='paid',
+            amount=request['amount'],
+            performed_by=performed_by,
+            details=f"Transaction ID: {txn_id}" if txn_id else None
+        )
+
         # Also update the buy-in record if it exists
-        cursor.execute('''
-            SELECT league_night_id, player_id FROM payment_requests WHERE id = ?
-        ''', (request_id,))
-        row = cursor.fetchone()
-        if row:
-            self.db.mark_buyin_paid(row['league_night_id'], row['player_id'], True, True)
+        self.db.mark_buyin_paid(request['league_night_id'], request['player_id'], True, True)
 
     def get_pending_requests(self, league_night_id: int) -> List[Dict]:
         """Get all pending payment requests for a league night."""
@@ -301,6 +358,13 @@ class VenmoIntegration:
         ''', (league_night_id,))
 
         return [dict(row) for row in cursor.fetchall()]
+
+    def get_league_night_payments(self, league_night_id: int) -> List[Dict]:
+        """Get all payments/buy-ins for a league night with player details.
+
+        Returns data from league_night_buyins table for API compatibility.
+        """
+        return self.db.get_buyins_for_night(league_night_id)
 
     # ============ Bulk Operations ============
 
@@ -431,3 +495,381 @@ class VenmoIntegration:
             webbrowser.open(link)
             return True
         return False
+
+    # ============ Audit Trail ============
+
+    def _log_audit(self, payment_request_id: Optional[int], league_night_id: int,
+                   player_id: int, action: str, old_status: str = None,
+                   new_status: str = None, amount: float = None,
+                   note: str = None, performed_by: str = 'system', details: str = None):
+        """Log a payment action to the audit trail."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO payment_audit_log
+            (payment_request_id, league_night_id, player_id, action, old_status,
+             new_status, amount, note, performed_by, performed_at, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (payment_request_id, league_night_id, player_id, action, old_status,
+              new_status, amount, note, performed_by, datetime.now().isoformat(), details))
+
+        conn.commit()
+
+    def get_audit_log(self, league_night_id: int = None, player_id: int = None,
+                      limit: int = 100) -> List[Dict]:
+        """Get audit log entries with optional filters."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT al.*, p.name as player_name, ln.date as league_night_date
+            FROM payment_audit_log al
+            LEFT JOIN players p ON al.player_id = p.id
+            LEFT JOIN league_nights ln ON al.league_night_id = ln.id
+            WHERE 1=1
+        '''
+        params = []
+
+        if league_night_id:
+            query += ' AND al.league_night_id = ?'
+            params.append(league_night_id)
+
+        if player_id:
+            query += ' AND al.player_id = ?'
+            params.append(player_id)
+
+        query += ' ORDER BY al.performed_at DESC LIMIT ?'
+        params.append(limit)
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ============ Payment Analytics ============
+
+    def get_payment_analytics(self, season_id: int = None) -> Dict:
+        """Get comprehensive payment analytics."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get all league nights for the season
+        if season_id:
+            cursor.execute('''
+                SELECT id, date FROM league_nights
+                WHERE season_id = ?
+                ORDER BY date
+            ''', (season_id,))
+        else:
+            cursor.execute('''
+                SELECT id, date FROM league_nights
+                ORDER BY date DESC
+                LIMIT 20
+            ''')
+
+        nights = cursor.fetchall()
+        night_ids = [n['id'] for n in nights]
+
+        if not night_ids:
+            return {
+                'total_expected': 0,
+                'total_collected': 0,
+                'collection_rate': 0,
+                'by_night': [],
+                'by_player': [],
+                'trends': []
+            }
+
+        # Calculate totals
+        placeholders = ','.join('?' * len(night_ids))
+        cursor.execute(f'''
+            SELECT
+                COALESCE(SUM(amount), 0) as total_expected,
+                COALESCE(SUM(CASE WHEN paid = 1 THEN amount ELSE 0 END), 0) as total_collected
+            FROM league_night_buyins
+            WHERE league_night_id IN ({placeholders})
+        ''', night_ids)
+
+        totals = cursor.fetchone()
+        total_expected = totals['total_expected']
+        total_collected = totals['total_collected']
+        collection_rate = (total_collected / total_expected * 100) if total_expected > 0 else 0
+
+        # Per-night breakdown
+        cursor.execute(f'''
+            SELECT
+                b.league_night_id,
+                ln.date,
+                COUNT(*) as player_count,
+                SUM(b.amount) as expected,
+                SUM(CASE WHEN b.paid = 1 THEN b.amount ELSE 0 END) as collected,
+                SUM(CASE WHEN b.paid = 1 THEN 1 ELSE 0 END) as paid_count
+            FROM league_night_buyins b
+            JOIN league_nights ln ON b.league_night_id = ln.id
+            WHERE b.league_night_id IN ({placeholders})
+            GROUP BY b.league_night_id
+            ORDER BY ln.date
+        ''', night_ids)
+
+        by_night = []
+        for row in cursor.fetchall():
+            by_night.append({
+                'league_night_id': row['league_night_id'],
+                'date': row['date'],
+                'player_count': row['player_count'],
+                'expected': row['expected'],
+                'collected': row['collected'],
+                'paid_count': row['paid_count'],
+                'collection_rate': (row['collected'] / row['expected'] * 100) if row['expected'] > 0 else 0
+            })
+
+        # Per-player breakdown
+        cursor.execute(f'''
+            SELECT
+                b.player_id,
+                p.name as player_name,
+                COUNT(*) as nights_attended,
+                SUM(b.amount) as total_owed,
+                SUM(CASE WHEN b.paid = 1 THEN b.amount ELSE 0 END) as total_paid,
+                SUM(CASE WHEN b.paid = 0 THEN b.amount ELSE 0 END) as outstanding
+            FROM league_night_buyins b
+            JOIN players p ON b.player_id = p.id
+            WHERE b.league_night_id IN ({placeholders})
+            GROUP BY b.player_id
+            ORDER BY outstanding DESC, p.name
+        ''', night_ids)
+
+        by_player = []
+        for row in cursor.fetchall():
+            by_player.append({
+                'player_id': row['player_id'],
+                'player_name': row['player_name'],
+                'nights_attended': row['nights_attended'],
+                'total_owed': row['total_owed'],
+                'total_paid': row['total_paid'],
+                'outstanding': row['outstanding'],
+                'payment_rate': (row['total_paid'] / row['total_owed'] * 100) if row['total_owed'] > 0 else 0
+            })
+
+        # Trends (collection rate over time)
+        trends = [{'date': n['date'], 'rate': n['collection_rate']} for n in by_night]
+
+        return {
+            'total_expected': total_expected,
+            'total_collected': total_collected,
+            'collection_rate': round(collection_rate, 1),
+            'outstanding': total_expected - total_collected,
+            'by_night': by_night,
+            'by_player': by_player,
+            'trends': trends
+        }
+
+    def get_season_summary(self, season_id: int = None) -> Dict:
+        """Get a comprehensive season payment summary."""
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        # Get season info
+        if season_id:
+            cursor.execute('SELECT * FROM seasons WHERE id = ?', (season_id,))
+        else:
+            cursor.execute('SELECT * FROM seasons ORDER BY start_date DESC LIMIT 1')
+
+        season = cursor.fetchone()
+        if not season:
+            return {'error': 'No season found'}
+
+        season_id = season['id']
+
+        # Get all league nights for this season
+        cursor.execute('''
+            SELECT id, date FROM league_nights
+            WHERE season_id = ?
+            ORDER BY date
+        ''', (season_id,))
+
+        nights = [dict(row) for row in cursor.fetchall()]
+        night_ids = [n['id'] for n in nights]
+
+        if not night_ids:
+            return {
+                'season': dict(season),
+                'total_nights': 0,
+                'total_players': 0,
+                'total_expected': 0,
+                'total_collected': 0,
+                'collection_rate': 0,
+                'outstanding': 0,
+                'nights': [],
+                'player_standings': []
+            }
+
+        placeholders = ','.join('?' * len(night_ids))
+
+        # Get unique players from buyins
+        cursor.execute(f'''
+            SELECT COUNT(DISTINCT player_id) as count
+            FROM league_night_buyins
+            WHERE league_night_id IN ({placeholders})
+        ''', night_ids)
+        total_players_buyins = cursor.fetchone()['count']
+
+        # Get totals from buyins
+        cursor.execute(f'''
+            SELECT
+                COALESCE(SUM(amount), 0) as total_expected,
+                COALESCE(SUM(CASE WHEN paid = 1 THEN amount ELSE 0 END), 0) as total_collected
+            FROM league_night_buyins
+            WHERE league_night_id IN ({placeholders})
+        ''', night_ids)
+
+        totals = cursor.fetchone()
+
+        # Get per-night details
+        cursor.execute(f'''
+            SELECT
+                ln.id,
+                ln.date,
+                COUNT(b.id) as player_count,
+                COALESCE(SUM(b.amount), 0) as expected,
+                COALESCE(SUM(CASE WHEN b.paid = 1 THEN b.amount ELSE 0 END), 0) as collected
+            FROM league_nights ln
+            LEFT JOIN league_night_buyins b ON ln.id = b.league_night_id
+            WHERE ln.id IN ({placeholders})
+            GROUP BY ln.id
+            ORDER BY ln.date
+        ''', night_ids)
+
+        night_details = []
+        for row in cursor.fetchall():
+            rate = (row['collected'] / row['expected'] * 100) if row['expected'] > 0 else 0
+            night_details.append({
+                'id': row['id'],
+                'date': row['date'],
+                'player_count': row['player_count'],
+                'expected': row['expected'],
+                'collected': row['collected'],
+                'collection_rate': round(rate, 1)
+            })
+
+        # Get player payment standings from buyins
+        cursor.execute(f'''
+            SELECT
+                p.id,
+                p.name,
+                p.venmo,
+                COUNT(b.id) as nights_played,
+                COALESCE(SUM(b.amount), 0) as total_owed,
+                COALESCE(SUM(CASE WHEN b.paid = 1 THEN b.amount ELSE 0 END), 0) as total_paid
+            FROM players p
+            JOIN league_night_buyins b ON p.id = b.player_id
+            WHERE b.league_night_id IN ({placeholders})
+            GROUP BY p.id
+            ORDER BY (COALESCE(SUM(b.amount), 0) - COALESCE(SUM(CASE WHEN b.paid = 1 THEN b.amount ELSE 0 END), 0)) DESC
+        ''', night_ids)
+
+        player_standings = []
+        for row in cursor.fetchall():
+            outstanding = row['total_owed'] - row['total_paid']
+            rate = (row['total_paid'] / row['total_owed'] * 100) if row['total_owed'] > 0 else 0
+            player_standings.append({
+                'id': row['id'],
+                'name': row['name'],
+                'venmo': row['venmo'],
+                'nights_played': row['nights_played'],
+                'total_owed': row['total_owed'],
+                'total_paid': row['total_paid'],
+                'outstanding': outstanding,
+                'payment_rate': round(rate, 1)
+            })
+
+        # If no buyins exist yet, get players from matches instead
+        # This allows the admin page to show players who have played even before buy-ins are created
+        if not player_standings:
+            # Get the default buy-in amount from settings
+            default_buyin = float(self.db.get_setting('default_buyin', '5'))
+            
+            # Count how many nights each player participated in
+            cursor.execute(f'''
+                SELECT player_id, COUNT(DISTINCT league_night_id) as nights_count
+                FROM (
+                    SELECT team1_player1_id as player_id, league_night_id FROM matches WHERE league_night_id IN ({placeholders}) AND team1_player1_id IS NOT NULL
+                    UNION ALL SELECT team1_player2_id, league_night_id FROM matches WHERE league_night_id IN ({placeholders}) AND team1_player2_id IS NOT NULL
+                    UNION ALL SELECT team2_player1_id, league_night_id FROM matches WHERE league_night_id IN ({placeholders}) AND team2_player1_id IS NOT NULL
+                    UNION ALL SELECT team2_player2_id, league_night_id FROM matches WHERE league_night_id IN ({placeholders}) AND team2_player2_id IS NOT NULL
+                )
+                GROUP BY player_id
+            ''', night_ids * 4)
+            
+            player_nights = {row['player_id']: row['nights_count'] for row in cursor.fetchall()}
+            
+            cursor.execute(f'''
+                SELECT DISTINCT p.id, p.name, p.venmo
+                FROM players p
+                WHERE p.id IN (
+                    SELECT team1_player1_id FROM matches WHERE league_night_id IN ({placeholders}) AND team1_player1_id IS NOT NULL
+                    UNION SELECT team1_player2_id FROM matches WHERE league_night_id IN ({placeholders}) AND team1_player2_id IS NOT NULL
+                    UNION SELECT team2_player1_id FROM matches WHERE league_night_id IN ({placeholders}) AND team2_player1_id IS NOT NULL
+                    UNION SELECT team2_player2_id FROM matches WHERE league_night_id IN ({placeholders}) AND team2_player2_id IS NOT NULL
+                )
+                ORDER BY p.name
+            ''', night_ids * 4)
+
+            for row in cursor.fetchall():
+                nights_played = player_nights.get(row['id'], 1)
+                total_owed = default_buyin * nights_played
+                player_standings.append({
+                    'id': row['id'],
+                    'name': row['name'],
+                    'venmo': row['venmo'],
+                    'nights_played': nights_played,
+                    'total_owed': total_owed,
+                    'total_paid': 0,
+                    'outstanding': total_owed,  # Default to unpaid
+                    'payment_rate': 0
+                })
+
+        # If still no players from matches, get all active players
+        if not player_standings:
+            default_buyin = float(self.db.get_setting('default_buyin', '5'))
+            cursor.execute('''
+                SELECT id, name, venmo FROM players
+                WHERE active = 1
+                ORDER BY name
+            ''')
+            for row in cursor.fetchall():
+                player_standings.append({
+                    'id': row['id'],
+                    'name': row['name'],
+                    'venmo': row['venmo'],
+                    'nights_played': 1,
+                    'total_owed': default_buyin,
+                    'total_paid': 0,
+                    'outstanding': default_buyin,  # Default to unpaid
+                    'payment_rate': 0
+                })
+
+        total_players = total_players_buyins if total_players_buyins > 0 else len(player_standings)
+        
+        # If we have buyins, use those totals; otherwise calculate from player_standings
+        if totals['total_expected'] > 0:
+            total_expected = totals['total_expected']
+            total_collected = totals['total_collected']
+        else:
+            # Calculate from player standings (fallback data)
+            total_expected = sum(p['total_owed'] for p in player_standings)
+            total_collected = sum(p['total_paid'] for p in player_standings)
+        
+        outstanding = total_expected - total_collected
+        collection_rate = (total_collected / total_expected * 100) if total_expected > 0 else 0
+
+        return {
+            'season': dict(season),
+            'total_nights': len(nights),
+            'total_players': total_players,
+            'total_expected': total_expected,
+            'total_collected': total_collected,
+            'outstanding': outstanding,
+            'collection_rate': round(collection_rate, 1),
+            'nights': night_details,
+            'player_standings': player_standings
+        }
