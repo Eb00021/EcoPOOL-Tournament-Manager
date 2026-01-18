@@ -79,9 +79,10 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - Bulk payment request creation
 
 ### ⚙️ Settings
-- Application preferences and configuration
-- Theme customization
-- Database management options
+- **Manager Password**: Set password for web manager mode access
+- **Venmo Settings**: Configure organizer Venmo username and default buy-in
+- **Data Management**: Create/restore backups, auto-backup on exit
+- Open data folder for direct database access
 
 ### 📱 Live Scores Web Server
 - Built-in Flask server to show live scores on phones and tablets
@@ -119,9 +120,9 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **New Pool Night**: Clear incomplete matches, keep completed games for leaderboard; optional save before clearing
 
 ### ✨ Animations & UI
-- Custom fonts and dark theme
+- Modern dark theme with custom fonts
 - Animated cards and buttons on the dashboard
-- Celebration effects
+- Celebration effects for wins
 - Mobile-responsive design for live scores web interface
 - Visual pool table representation on web interface
 
@@ -184,10 +185,8 @@ EcoPOOL Toolkit/
 ├── fonts.py                # Custom fonts
 ├── profile_pictures.py     # Profile picture handling
 ├── achievements.py         # Achievement system and badge management
-├── advanced_stats.py        # Advanced statistics calculations
+├── advanced_stats.py       # Advanced statistics calculations
 ├── venmo_integration.py    # Venmo payment integration
-├── themes.py              # Theme management
-├── undo_manager.py         # Undo/redo functionality
 ├── spectator_reactions.py  # Spectator reaction system
 ├── requirements.txt
 ├── profile_pictures/       # Player profile images
