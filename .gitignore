@@ -1,0 +1,39 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+.venv/
+.venv1/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Database
+*.db
+*.db-journal
+
+# SSL certificates
+ssl_certs/
+
+# User data
+profile_pictures/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
