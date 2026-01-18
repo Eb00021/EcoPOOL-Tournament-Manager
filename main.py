@@ -49,9 +49,9 @@ from views.table_tracker_view import TableTrackerView
 from views.bracket_view import BracketView
 from views.stats_view import StatsView
 from views.payments_view import PaymentsView
+from views.settings_view import SettingsView
 from animations import AnimatedCard, AnimatedButton, show_celebration
 from web_server import LiveScoreServer
-from themes import get_theme_manager
 
 
 class EcoPoolApp(ctk.CTk):
@@ -161,6 +161,7 @@ class EcoPoolApp(ctk.CTk):
             ("leaderboard", "📊 Leaderboard", lambda: self.show_view("leaderboard")),
             ("stats", "📈 Advanced Stats", lambda: self.show_view("stats")),
             ("payments", "💳 Payments", lambda: self.show_view("payments")),
+            ("settings", "⚙️ Settings", lambda: self.show_view("settings")),
         ]
         
         nav_frame = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
@@ -570,6 +571,9 @@ class EcoPoolApp(ctk.CTk):
             view.pack(fill="both", expand=True)
         elif view_name == "payments":
             view = PaymentsView(self.content, self.db)
+            view.pack(fill="both", expand=True)
+        elif view_name == "settings":
+            view = SettingsView(self.content, self.db)
             view.pack(fill="both", expand=True)
     
     def new_pool_night(self):

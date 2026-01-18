@@ -9,18 +9,15 @@ import os
 import shutil
 from datetime import datetime
 from database import DatabaseManager
-from themes import ThemeManager, THEMES, get_theme_manager
 from fonts import get_font
 
 
 class SettingsView(ctk.CTkFrame):
     """View for application settings."""
 
-    def __init__(self, parent, db: DatabaseManager, on_theme_change: callable = None):
+    def __init__(self, parent, db: DatabaseManager):
         super().__init__(parent, fg_color='transparent')
         self.db = db
-        self.theme_mgr = get_theme_manager(db)
-        self.on_theme_change = on_theme_change
 
         self.setup_ui()
 
@@ -38,69 +35,6 @@ class SettingsView(ctk.CTkFrame):
         # Scrollable content
         content = ctk.CTkScrollableFrame(self, fg_color='transparent')
         content.pack(fill='both', expand=True, padx=20, pady=10)
-
-        # ========== Appearance Section ==========
-        self._create_section(content, '🎨 Appearance')
-
-        appearance_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
-        appearance_card.pack(fill='x', pady=10)
-
-        # Theme selector
-        theme_row = ctk.CTkFrame(appearance_card, fg_color='transparent')
-        theme_row.pack(fill='x', padx=20, pady=15)
-
-        ctk.CTkLabel(
-            theme_row,
-            text='Theme',
-            font=get_font(14, 'bold')
-        ).pack(anchor='w')
-
-        ctk.CTkLabel(
-            theme_row,
-            text='Choose your preferred color scheme',
-            font=get_font(11),
-            text_color='#888888'
-        ).pack(anchor='w')
-
-        themes_frame = ctk.CTkFrame(theme_row, fg_color='transparent')
-        themes_frame.pack(fill='x', pady=10)
-
-        current_theme = self.db.get_setting('app_theme', 'dark')
-
-        for theme_key, theme in THEMES.items():
-            is_selected = theme_key == current_theme
-
-            btn = ctk.CTkButton(
-                themes_frame,
-                text=theme.name,
-                font=get_font(12),
-                fg_color=theme.accent_primary if is_selected else '#333333',
-                hover_color=theme.accent_secondary,
-                width=100,
-                height=35,
-                command=lambda t=theme_key: self._set_theme(t)
-            )
-            btn.pack(side='left', padx=5)
-
-        # Quick toggle
-        toggle_row = ctk.CTkFrame(appearance_card, fg_color='transparent')
-        toggle_row.pack(fill='x', padx=20, pady=(0, 15))
-
-        ctk.CTkLabel(
-            toggle_row,
-            text='Dark Mode',
-            font=get_font(13)
-        ).pack(side='left')
-
-        self.dark_mode_var = ctk.BooleanVar(value=self.theme_mgr.is_dark_mode)
-        ctk.CTkSwitch(
-            toggle_row,
-            text='',
-            variable=self.dark_mode_var,
-            command=self._toggle_dark_mode,
-            fg_color='#333333',
-            progress_color='#4CAF50'
-        ).pack(side='right')
 
         # ========== Venmo Section ==========
         self._create_section(content, '💳 Venmo Settings')
@@ -354,7 +288,7 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             about_inner,
-            text='Features: Achievements, Statistics, Venmo Integration, Themes & more!',
+            text='Features: Achievements, Statistics, Venmo Integration & more!',
             font=get_font(11),
             text_color='#666666'
         ).pack(anchor='w', pady=(5, 0))
@@ -366,26 +300,6 @@ class SettingsView(ctk.CTkFrame):
             text=title,
             font=get_font(16, 'bold')
         ).pack(anchor='w', pady=(20, 5))
-
-    def _set_theme(self, theme_key: str):
-        """Set the application theme."""
-        self.theme_mgr.set_theme(theme_key)
-        self.dark_mode_var.set(self.theme_mgr.is_dark_mode)
-
-        if self.on_theme_change:
-            self.on_theme_change(self.theme_mgr.current_theme)
-
-        messagebox.showinfo(
-            "Theme Changed",
-            f"Theme changed to {THEMES[theme_key].name}.\n\n"
-            "Some changes may require restarting the application."
-        )
-
-    def _toggle_dark_mode(self):
-        """Toggle dark/light mode."""
-        self.theme_mgr.toggle_dark_mode()
-        if self.on_theme_change:
-            self.on_theme_change(self.theme_mgr.current_theme)
 
     def _save_venmo(self):
         """Save organizer Venmo username."""
