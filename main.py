@@ -110,33 +110,31 @@ class EcoPoolApp(ctk.CTk):
         
         # Logo/Title (fixed at top)
         logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        logo_frame.pack(fill="x", padx=20, pady=(15, 10))
-        
-        logo_inner = ctk.CTkFrame(logo_frame, fg_color="transparent")
-        logo_inner.pack()
-        
+        logo_frame.pack(fill="x", padx=10, pady=(15, 10))
+
+        # Load and display logo image
+        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+        if os.path.exists(logo_path):
+            try:
+                logo_img = Image.open(logo_path)
+                # Scale to fit sidebar width (about 200px wide)
+                aspect = logo_img.width / logo_img.height
+                logo_width = 200
+                logo_height = int(logo_width / aspect)
+                logo_ctk = ctk.CTkImage(light_image=logo_img, dark_image=logo_img, size=(logo_width, logo_height))
+                ctk.CTkLabel(logo_frame, image=logo_ctk, text="").pack()
+            except Exception:
+                # Fallback to text if image fails
+                ctk.CTkLabel(logo_frame, text="EcoPOOL", font=get_font(22, "bold"), text_color="#EAAA00").pack()
+        else:
+            ctk.CTkLabel(logo_frame, text="EcoPOOL", font=get_font(22, "bold"), text_color="#EAAA00").pack()
+
         ctk.CTkLabel(
-            logo_inner,
-            text="🎱",
-            font=get_font(36)
-        ).pack(side="left", padx=(0, 8))
-        
-        title_frame = ctk.CTkFrame(logo_inner, fg_color="transparent")
-        title_frame.pack(side="left")
-        
-        ctk.CTkLabel(
-            title_frame,
-            text="EcoPOOL",
-            font=get_font(22, "bold"),
-            text_color="#4CAF50"
-        ).pack(anchor="w")
-        
-        ctk.CTkLabel(
-            title_frame,
+            logo_frame,
             text="League Manager",
             font=get_font(11),
             text_color="#888888"
-        ).pack(anchor="w")
+        ).pack()
         
         # Scrollable content area for navigation and data management
         sidebar_scroll = ctk.CTkScrollableFrame(

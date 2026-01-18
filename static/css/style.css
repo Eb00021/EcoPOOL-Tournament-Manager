@@ -81,7 +81,14 @@
             margin-bottom: 15px;
             border: 2px solid var(--wvu-gold);
         }
-        
+
+        .header-logo {
+            max-width: 280px;
+            width: 100%;
+            height: auto;
+            margin-bottom: 5px;
+        }
+
         .header h1 {
             font-size: 1.5em;
             display: flex;
