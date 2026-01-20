@@ -1186,9 +1186,9 @@
             // Haptic feedback on mobile - satisfying ball pocket feel
             haptic('ballPocket');
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -1228,7 +1228,7 @@
                     game_number: gameNumber,
                     ball_number: ballNum,
                     team: newTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1252,8 +1252,7 @@
                     // Refresh scorecard immediately for responsive UX
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to update ball'));
+                    handleApiError(data, 'Failed to update ball');
                 }
             })
             .catch(err => {
@@ -1298,12 +1297,12 @@
         
         function toggleBallInScorecard(matchId, gameNumber, ballNum, currentTeam) {
             if (!managerAuthenticated) return;
-            
-            const password = sessionStorage.getItem('manager_password');
-            
+
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+
             // Toggle: currentTeam -> other team -> remove (0)
             let newTeam = currentTeam === 1 ? 2 : (currentTeam === 2 ? 0 : 1);
-            
+
             fetch('/api/manager/pocket-ball', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1312,7 +1311,7 @@
                     game_number: gameNumber,
                     ball_number: ballNum,
                     team: newTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1321,7 +1320,7 @@
                     // Reload scorecard - it will auto-refresh via SSE, but refresh immediately for better UX
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
-                    alert('Error: ' + (data.error || 'Failed to update ball'));
+                    handleApiError(data, 'Failed to update ball');
                 }
             })
             .catch(err => {
@@ -1388,7 +1387,10 @@
         
         // Start connection when page loads
         connectSSE();
-        
+
+        // Check for existing manager session (auto-login if session is still valid)
+        checkExistingManagerSession();
+
         // Reconnect on visibility change (when user returns to tab)
         document.addEventListener('visibilitychange', function() {
             if (document.visibilityState === 'visible') {
@@ -1410,13 +1412,13 @@
         function toggleManagerMode() {
             // Haptic feedback for mode toggle
             haptic('medium');
-            
+
             if (managerMode) {
                 managerMode = false;
                 managerAuthenticated = false;
                 lastQueuePanelHash = null;  // Reset so next time manager mode is enabled, it loads fresh
                 lastMainUIHash = null;  // Reset to force UI redraw
-                sessionStorage.removeItem('manager_password');
+                sessionStorage.removeItem('manager_session_token');
                 const btn = document.getElementById('manager-toggle');
                 btn.classList.remove('active');
                 btn.textContent = '🔧 Manager Mode';
@@ -1429,11 +1431,11 @@
                 promptManagerPassword();
             }
         }
-        
+
         function promptManagerPassword() {
             const password = prompt('Enter Manager Password:');
             if (password === null) return;
-            
+
             fetch('/api/manager/verify-password', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1444,12 +1446,13 @@
                 if (data.success) {
                     // Success haptic - authenticated!
                     haptic('success');
-                    
+
                     managerAuthenticated = true;
                     managerMode = true;
                     lastMainUIHash = null;  // Reset to force UI redraw with manager panel
                     lastQueuePanelHash = null;  // Reset queue panel
-                    sessionStorage.setItem('manager_password', password);
+                    // Store session token instead of password
+                    sessionStorage.setItem('manager_session_token', data.session_token);
                     const btn = document.getElementById('manager-toggle');
                     btn.classList.add('active');
                     btn.textContent = '🔧 Manager Mode (ON)';
@@ -1469,7 +1472,94 @@
                 alert('Error verifying password. Please try again.');
             });
         }
-        
+
+        // Check for existing manager session on page load
+        function checkExistingManagerSession() {
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) return;
+
+            fetch('/api/manager/check-session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({session_token: sessionToken})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.valid) {
+                    // Session is still valid - auto-enable manager mode
+                    managerAuthenticated = true;
+                    managerMode = true;
+                    lastMainUIHash = null;
+                    lastQueuePanelHash = null;
+                    const btn = document.getElementById('manager-toggle');
+                    if (btn) {
+                        btn.classList.add('active');
+                        btn.textContent = '🔧 Manager Mode (ON)';
+                    }
+                    // Refresh UI to show manager panel
+                    fetch('/api/scores')
+                        .then(r => r.json())
+                        .then(updateUI)
+                        .catch(console.error);
+                } else {
+                    // Session expired - clear it
+                    sessionStorage.removeItem('manager_session_token');
+                }
+            })
+            .catch(err => {
+                console.error('Session check error:', err);
+                sessionStorage.removeItem('manager_session_token');
+            });
+        }
+
+        // Check if an API error indicates session expiration
+        function isUnauthorizedError(data) {
+            return data.error && (
+                data.error === 'Unauthorized' ||
+                data.error.toLowerCase().includes('unauthorized') ||
+                data.error.toLowerCase().includes('session')
+            );
+        }
+
+        // Handle API errors, checking for session expiration
+        function handleApiError(data, defaultMessage) {
+            if (isUnauthorizedError(data)) {
+                handleSessionExpired();
+                return true; // Indicates session expired
+            }
+            haptic('error');
+            alert('Error: ' + (data.error || defaultMessage));
+            return false;
+        }
+
+        // Handle session expiration - disable manager mode and notify user
+        function handleSessionExpired() {
+            managerMode = false;
+            managerAuthenticated = false;
+            sessionStorage.removeItem('manager_session_token');
+
+            const btn = document.getElementById('manager-toggle');
+            if (btn) {
+                btn.classList.remove('active');
+                btn.textContent = '🔧 Manager Mode';
+            }
+
+            // Reset UI state
+            lastMainUIHash = null;
+            lastQueuePanelHash = null;
+
+            // Haptic feedback
+            haptic('error');
+
+            alert('Your manager session has expired. Please log in again.');
+
+            // Refresh UI to remove manager panel
+            fetch('/api/scores')
+                .then(r => r.json())
+                .then(updateUI)
+                .catch(console.error);
+        }
+
         function openPaymentPortal() {
             // Open payment portal in new tab/window
             window.open('/admin/payments/login', '_blank');
@@ -1636,9 +1726,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -1651,7 +1741,7 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     match_id: matchId,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1667,8 +1757,7 @@
                         .then(updateUI)
                         .catch(console.error);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to complete match'));
+                    handleApiError(data, 'Failed to complete match');
                 }
             })
             .catch(err => {
@@ -1684,9 +1773,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -1700,7 +1789,7 @@
                 body: JSON.stringify({
                     match_id: matchId,
                     table_number: tableNumber,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1714,8 +1803,7 @@
                         .then(updateUI)
                         .catch(console.error);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to start match'));
+                    handleApiError(data, 'Failed to start match');
                 }
             })
             .catch(err => {
@@ -1813,7 +1901,7 @@
             // Haptic feedback on mobile - ball pocket feel
             haptic('ballPocket');
             
-            const password = sessionStorage.getItem('manager_password');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
             const balls = JSON.parse(currentManagerGame.balls_pocketed || '{}');
             const currentTeam = balls[ballNum];
             
@@ -1838,7 +1926,7 @@
                     game_number: currentManagerGame.game_number,
                     ball_number: ballNum,
                     team: newTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1846,7 +1934,7 @@
                 if (data.success) {
                     loadManagerMatch();
                 } else {
-                    alert('Error: ' + (data.error || 'Failed to update ball'));
+                    handleApiError(data, 'Failed to update ball');
                 }
             })
             .catch(err => {
@@ -1862,7 +1950,7 @@
             
             haptic('strong');
             
-            const password = sessionStorage.getItem('manager_password');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
             
             fetch('/api/manager/win-game', {
                 method: 'POST',
@@ -1871,7 +1959,7 @@
                     match_id: currentManagerMatch.id,
                     game_number: currentManagerGame.game_number,
                     winning_team: winningTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1885,8 +1973,7 @@
                         setTimeout(() => refreshOpenScorecard(), 100);
                     }
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to mark game as won'));
+                    handleApiError(data, 'Failed to mark game as won');
                 }
             })
             .catch(err => {
@@ -1903,9 +1990,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -1920,7 +2007,7 @@
                     match_id: matchId,
                     game_number: gameNumber,
                     winning_team: winningTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1931,8 +2018,7 @@
                     // Refresh the scorecard
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to mark game as won'));
+                    handleApiError(data, 'Failed to mark game as won');
                 }
             })
             .catch(err => {
@@ -1952,9 +2038,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -1965,7 +2051,7 @@
                     match_id: matchId,
                     game_number: gameNumber,
                     breaking_team: breakingTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -1974,7 +2060,7 @@
                     // Refresh the scorecard
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
-                    alert('Error: ' + (data.error || 'Failed to set breaking team'));
+                    handleApiError(data, 'Failed to set breaking team');
                 }
             })
             .catch(err => {
@@ -1993,9 +2079,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -2006,7 +2092,7 @@
                     match_id: matchId,
                     game_number: gameNumber,
                     team1_group: team1Group,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -2015,7 +2101,7 @@
                     // Refresh the scorecard to show updated group and scores
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
-                    alert('Error: ' + (data.error || 'Failed to set group'));
+                    handleApiError(data, 'Failed to set group');
                 }
             })
             .catch(err => {
@@ -2031,9 +2117,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -2049,7 +2135,7 @@
                     game_number: gameNumber,
                     golden_break: true,
                     winning_team: winningTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -2060,8 +2146,7 @@
                     alert('⭐ Golden Break! Game won!');
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to set golden break'));
+                    handleApiError(data, 'Failed to set golden break');
                 }
             })
             .catch(err => {
@@ -2078,9 +2163,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -2096,7 +2181,7 @@
                     match_id: matchId,
                     game_number: gameNumber,
                     losing_team: losingTeam,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -2107,8 +2192,7 @@
                     alert('❌ Early 8-ball! Game over.');
                     setTimeout(() => refreshOpenScorecard(), 100);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to set early 8-ball'));
+                    handleApiError(data, 'Failed to set early 8-ball');
                 }
             })
             .catch(err => {
@@ -2125,9 +2209,9 @@
                 return;
             }
             
-            const password = sessionStorage.getItem('manager_password');
-            if (!password) {
-                alert('Manager password not found. Please re-enter manager mode.');
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
                 return;
             }
             
@@ -2141,7 +2225,7 @@
                 body: JSON.stringify({
                     match_id: matchId,
                     game_number: gameNumber,
-                    password: password
+                    session_token: sessionToken
                 })
             })
             .then(r => r.json())
@@ -2151,8 +2235,7 @@
                     showToast('🔄 Table reset! All balls back on table.');
                     setTimeout(() => refreshOpenScorecard(), 50);
                 } else {
-                    haptic('error');
-                    alert('Error: ' + (data.error || 'Failed to reset table'));
+                    handleApiError(data, 'Failed to reset table');
                 }
             })
             .catch(err => {

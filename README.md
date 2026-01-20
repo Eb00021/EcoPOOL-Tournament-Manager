@@ -79,6 +79,8 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - QR code generation for payment links
 - Payment history and confirmation tracking
 - Bulk payment request creation
+- **Season selector**: View payment data by season or across all seasons
+- **Auto-season creation**: Automatically creates a season if none exists when starting games
 
 ### ⚙️ Settings
 - **Manager Password**: Set password for web manager mode access
@@ -103,6 +105,8 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 
 ### 📲 Manager Mode (Mobile Scoring)
 - **Password-protected** mobile interface for league managers
+- **Session persistence**: Stay logged in during the server session (no re-entering password)
+- **Multi-manager support**: Multiple managers can be logged in simultaneously
 - **Full scorecard control** from any phone or tablet on the network
 - **Pocket balls**: Tap balls to pocket them for either team with automatic scoring
 - **Auto group assignment**: First pocketed ball assigns Solids/Stripes based on breaking team
@@ -113,6 +117,7 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Start matches**: Assign queued matches to available tables
 - **Player conflict detection**: Prevents starting a match when players are already on an active table
 - **Complete matches**: End matches and free tables for new games
+- **Session expiration**: Sessions automatically expire after 24 hours for security
 - Real-time sync with desktop app and all spectator views
 
 ### 📄 Export & Data Management

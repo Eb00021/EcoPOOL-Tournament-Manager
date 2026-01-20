@@ -405,6 +405,12 @@
     <div class="header">
         <h1>💳 Payment Admin</h1>
         <div class="subtitle">EcoPOOL League Payment Management</div>
+        <div class="season-selector" style="margin-top: 15px;">
+            <label for="season-select" style="margin-right: 10px; color: #8b949e;">Season:</label>
+            <select id="season-select" onchange="onSeasonChange()" style="padding: 8px 12px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 14px; cursor: pointer;">
+                <option value="">Loading...</option>
+            </select>
+        </div>
     </div>
 
     <!-- Summary Stats -->
@@ -459,6 +465,8 @@
     <script>
         let playersData = [];
         let currentFilter = 'outstanding';
+        let selectedSeasonId = null;
+        let seasonsLoaded = false;
 
         function setFilter(filter) {
             currentFilter = filter;
@@ -468,12 +476,68 @@
             renderPlayers();
         }
 
+        async function loadSeasons() {
+            try {
+                const response = await fetch('/api/seasons');
+                const seasons = await response.json();
+
+                const select = document.getElementById('season-select');
+                select.innerHTML = '';
+
+                // Add "All Seasons" option
+                const allOption = document.createElement('option');
+                allOption.value = '0';
+                allOption.textContent = 'All Seasons';
+                select.appendChild(allOption);
+
+                // Add individual seasons
+                seasons.forEach(season => {
+                    const option = document.createElement('option');
+                    option.value = season.id;
+                    option.textContent = season.name + (season.is_active ? ' (Active)' : '');
+                    select.appendChild(option);
+                });
+
+                // Select the active season by default, or first season if none active
+                const activeSeason = seasons.find(s => s.is_active);
+                if (activeSeason) {
+                    select.value = activeSeason.id;
+                    selectedSeasonId = activeSeason.id;
+                } else if (seasons.length > 0) {
+                    select.value = seasons[0].id;
+                    selectedSeasonId = seasons[0].id;
+                } else {
+                    selectedSeasonId = 0;
+                }
+
+                seasonsLoaded = true;
+            } catch (err) {
+                console.error('Error loading seasons:', err);
+                const select = document.getElementById('season-select');
+                select.innerHTML = '<option value="0">All Seasons</option>';
+                selectedSeasonId = 0;
+                seasonsLoaded = true;
+            }
+        }
+
+        function onSeasonChange() {
+            const select = document.getElementById('season-select');
+            selectedSeasonId = parseInt(select.value);
+            refreshData();
+        }
+
         async function loadData() {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 15000);
-                
-                const response = await fetch('/api/payments/season-summary', {
+
+                // Build URL with season_id parameter
+                let url = '/api/payments/season-summary';
+                if (selectedSeasonId !== null) {
+                    url += `?season_id=${selectedSeasonId}`;
+                }
+
+                const response = await fetch(url, {
                     signal: controller.signal
                 });
                 clearTimeout(timeoutId);
@@ -698,8 +762,12 @@
             }
         }
 
-        // Initial load
-        loadData();
+        // Initial load - load seasons first, then data
+        async function init() {
+            await loadSeasons();
+            await loadData();
+        }
+        init();
 
         // Auto-refresh every 60 seconds
         setInterval(refreshData, 60000);

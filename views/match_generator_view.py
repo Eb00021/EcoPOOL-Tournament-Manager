@@ -1060,7 +1060,14 @@ class MatchGeneratorView(ctk.CTkFrame):
         
         # Get or create active season
         season = self.db.get_active_season()
-        season_id = season.id if season else None
+        if not season:
+            # Auto-create a default season
+            year = datetime.now().year
+            quarter = (datetime.now().month - 1) // 3 + 1
+            season_name = f"{year} Q{quarter} Season"
+            season_id = self.db.create_season(season_name, datetime.now().strftime("%Y-%m-%d"))
+        else:
+            season_id = season.id
         
         # Create league night
         today = datetime.now().strftime("%Y-%m-%d")

@@ -12,6 +12,7 @@ import os
 import atexit
 import signal
 import sys
+import secrets
 from datetime import datetime
 from flask import Flask, Response, render_template, jsonify, send_file, abort, request
 import logging
@@ -49,10 +50,24 @@ class LiveScoreServer:
         self._last_data_hash = None
         self._update_event = threading.Event()
         self._shutdown_event = threading.Event()
+
+        # Version counter for SSE updates - incremented when data changes
+        # Each SSE client tracks the last version they saw
+        self._data_version = 0
+        self._data_version_lock = threading.Lock()
         
         # Thread-local storage for database connections
         self._local = threading.local()
-        
+
+        # Manager session tracking - stores session tokens with timestamps
+        # Session tokens are generated on successful password verification
+        # Format: {token: creation_timestamp}
+        self._manager_sessions = {}
+        self._session_lock = threading.Lock()
+        self._session_max_age = 24 * 60 * 60  # 24 hours in seconds
+        self._session_cleanup_interval = 60 * 60  # Cleanup every hour
+        self._last_session_cleanup = time.time()
+
         # Initialize reaction manager
         from spectator_reactions import get_reaction_manager
         self.reaction_manager = get_reaction_manager()
@@ -67,7 +82,7 @@ class LiveScoreServer:
     
     def _on_reaction(self, reaction):
         """Callback when a new reaction is added - triggers update event."""
-        self._update_event.set()
+        self.notify_update()
     
     def _get_thread_db(self):
         """Get a thread-local database connection for manager mode operations.
@@ -99,7 +114,50 @@ class LiveScoreServer:
                     print(f"Failed to reinitialize database: {e2}")
                     raise
         return self._local.db
-    
+
+    def _validate_manager_session(self, session_token: str) -> bool:
+        """Validate a manager session token.
+
+        Args:
+            session_token: The session token to validate
+
+        Returns:
+            True if the session is valid, False otherwise
+        """
+        if not session_token:
+            return False
+
+        current_time = time.time()
+
+        with self._session_lock:
+            # Periodic cleanup of expired sessions
+            if current_time - self._last_session_cleanup > self._session_cleanup_interval:
+                self._cleanup_expired_sessions_locked(current_time)
+
+            # Check if session exists and is not expired
+            if session_token not in self._manager_sessions:
+                return False
+
+            session_created = self._manager_sessions[session_token]
+            if current_time - session_created > self._session_max_age:
+                # Session expired - remove it
+                del self._manager_sessions[session_token]
+                return False
+
+            return True
+
+    def _cleanup_expired_sessions_locked(self, current_time: float):
+        """Remove expired sessions. Must be called with _session_lock held."""
+        expired_tokens = [
+            token for token, created in self._manager_sessions.items()
+            if current_time - created > self._session_max_age
+        ]
+        for token in expired_tokens:
+            del self._manager_sessions[token]
+        self._last_session_cleanup = current_time
+        if expired_tokens:
+            print(f"Cleaned up {len(expired_tokens)} expired manager sessions")
+
     def _setup_routes(self):
         """Setup Flask routes."""
         
@@ -141,13 +199,26 @@ class LiveScoreServer:
         
         @self.app.route('/api/stream')
         def stream():
-            """Server-Sent Events endpoint for live updates."""
+            """Server-Sent Events endpoint for live updates.
+
+            Uses a version counter to track updates. Each client maintains
+            its own last-seen version to avoid race conditions when multiple
+            clients are connected simultaneously.
+            """
             def generate():
+                last_seen_version = -1  # Track this client's last seen version
+
                 while self.running and not self._shutdown_event.is_set():
                     try:
-                        # Send current data
-                        data = self._get_scores_data()
-                        yield f"data: {json.dumps(data)}\n\n"
+                        # Check if there's new data (version changed)
+                        with self._data_version_lock:
+                            current_version = self._data_version
+
+                        # Always send on first iteration or when version changes
+                        if current_version != last_seen_version:
+                            data = self._get_scores_data()
+                            yield f"data: {json.dumps(data)}\n\n"
+                            last_seen_version = current_version
                     except Exception as e:
                         # Send error state but keep connection alive
                         error_data = {
@@ -166,10 +237,10 @@ class LiveScoreServer:
                             'total_queued': 0
                         }
                         yield f"data: {json.dumps(error_data)}\n\n"
-                    
+
                     # Wait for update signal or timeout (poll every 2 seconds)
+                    # Don't clear the event - let other clients also wake up
                     self._update_event.wait(timeout=2.0)
-                    self._update_event.clear()
             
             return Response(
                 generate(),
@@ -184,24 +255,42 @@ class LiveScoreServer:
         # Manager Mode API endpoints
         @self.app.route('/api/manager/verify-password', methods=['POST'])
         def verify_manager_password():
-            """Verify manager password."""
+            """Verify manager password and create session."""
             try:
                 data = request.get_json()
                 password = data.get('password', '')
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
+
                 stored_password = db.get_setting('manager_password', '')
-                
+
                 if stored_password and password == stored_password:
-                    return jsonify({'success': True})
+                    # Generate a session token and store it server-side with timestamp
+                    session_token = secrets.token_urlsafe(32)
+                    with self._session_lock:
+                        self._manager_sessions[session_token] = time.time()
+                    return jsonify({'success': True, 'session_token': session_token})
                 return jsonify({'success': False, 'error': 'Incorrect password'})
             except Exception as e:
                 import traceback
                 error_msg = str(e)
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
+
+        @self.app.route('/api/manager/check-session', methods=['POST'])
+        def check_manager_session():
+            """Check if a manager session is still valid."""
+            try:
+                data = request.get_json()
+                session_token = data.get('session_token', '')
+
+                # Use the validation method which handles expiration
+                is_valid = self._validate_manager_session(session_token)
+
+                return jsonify({'valid': is_valid})
+            except Exception as e:
+                return jsonify({'valid': False, 'error': str(e)})
         
         @self.app.route('/api/manager/match/<int:match_id>', methods=['GET'])
         def get_manager_match(match_id):
@@ -320,16 +409,15 @@ class LiveScoreServer:
                 game_number = data.get('game_number')
                 ball_number = data.get('ball_number')
                 team = data.get('team')  # 1 or 2
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
                 
                 # Get current game
                 games = db.get_games_for_match(match_id)
@@ -534,17 +622,16 @@ class LiveScoreServer:
                 match_id = data.get('match_id')
                 game_number = data.get('game_number')
                 winning_team = data.get('winning_team')  # 1 or 2
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Update game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -594,17 +681,16 @@ class LiveScoreServer:
                 match_id = data.get('match_id')
                 game_number = data.get('game_number')
                 team1_group = data.get('team1_group')  # 'solids' or 'stripes'
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Find the game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -683,17 +769,16 @@ class LiveScoreServer:
                 match_id = data.get('match_id')
                 game_number = data.get('game_number')
                 breaking_team = data.get('breaking_team')  # 1 or 2
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Find the game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -733,17 +818,16 @@ class LiveScoreServer:
                 game_number = data.get('game_number')
                 golden_break = data.get('golden_break', False)
                 winning_team = data.get('winning_team', 1)  # Team that got the golden break
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Find the game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -793,17 +877,16 @@ class LiveScoreServer:
                 match_id = data.get('match_id')
                 game_number = data.get('game_number')
                 losing_team = data.get('losing_team')  # Team that scratched on 8
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Find the game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -855,17 +938,16 @@ class LiveScoreServer:
                 data = request.get_json()
                 match_id = data.get('match_id')
                 game_number = data.get('game_number')
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Find the game
                 games = db.get_games_for_match(match_id)
                 current_game = None
@@ -997,17 +1079,16 @@ class LiveScoreServer:
                 data = request.get_json()
                 match_id = data.get('match_id')
                 table_number = data.get('table_number')
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Get the match
                 match = db.get_match(match_id)
                 if not match:
@@ -1066,17 +1147,16 @@ class LiveScoreServer:
             try:
                 data = request.get_json()
                 match_id = data.get('match_id')
-                password = data.get('password')
-                
-                # Verify password
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-                
-                stored_password = db.get_setting('manager_password', '')
-                if not stored_password or password != stored_password:
-                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-                
+
                 # Get the match
                 match = db.get_match(match_id)
                 if not match:
@@ -1291,6 +1371,22 @@ class LiveScoreServer:
                 import traceback
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)})
+
+        @self.app.route('/api/seasons')
+        def get_seasons():
+            """Get all seasons for selection dropdown."""
+            try:
+                db = self._get_thread_db()
+                seasons = db.get_all_seasons()
+                return jsonify([{
+                    'id': s.id,
+                    'name': s.name,
+                    'is_active': s.is_active,
+                    'start_date': s.start_date,
+                    'end_date': s.end_date
+                } for s in seasons])
+            except Exception as e:
+                return jsonify({'error': str(e)})
 
         @self.app.route('/api/payments/analytics')
         def get_payment_analytics():
@@ -1874,8 +1970,16 @@ class LiveScoreServer:
             return "127.0.0.1"
     
     def notify_update(self):
-        """Notify connected clients of a data update."""
+        """Notify connected clients of a data update.
+
+        Increments the version counter and signals waiting SSE clients.
+        Thread-safe for concurrent access.
+        """
+        with self._data_version_lock:
+            self._data_version += 1
+        # Set and immediately clear the event to wake up all waiting clients
         self._update_event.set()
+        self._update_event.clear()
     
     def start(self) -> tuple[bool, str]:
         """Start the web server in a background thread.

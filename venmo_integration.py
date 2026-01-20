@@ -664,31 +664,49 @@ class VenmoIntegration:
         }
 
     def get_season_summary(self, season_id: int = None) -> Dict:
-        """Get a comprehensive season payment summary."""
+        """Get a comprehensive season payment summary.
+
+        Args:
+            season_id: Season ID to filter by. If 0, returns all league nights
+                      regardless of season. If None, uses most recent season.
+        """
         conn = self.db.get_connection()
         cursor = conn.cursor()
 
-        # Get season info
-        if season_id:
-            cursor.execute('SELECT * FROM seasons WHERE id = ?', (season_id,))
+        # Handle "all seasons" case (season_id = 0)
+        if season_id == 0:
+            # Get all league nights regardless of season
+            cursor.execute('''
+                SELECT id, date FROM league_nights
+                ORDER BY date
+            ''')
+            nights = [dict(row) for row in cursor.fetchall()]
+            night_ids = [n['id'] for n in nights]
+
+            # Create a synthetic "all seasons" record
+            season = {'id': 0, 'name': 'All Seasons', 'is_active': 0, 'start_date': None, 'end_date': None}
         else:
-            cursor.execute('SELECT * FROM seasons ORDER BY start_date DESC LIMIT 1')
+            # Get season info
+            if season_id:
+                cursor.execute('SELECT * FROM seasons WHERE id = ?', (season_id,))
+            else:
+                cursor.execute('SELECT * FROM seasons ORDER BY start_date DESC LIMIT 1')
 
-        season = cursor.fetchone()
-        if not season:
-            return {'error': 'No season found'}
+            season = cursor.fetchone()
+            if not season:
+                return {'error': 'No season found'}
 
-        season_id = season['id']
+            season_id = season['id']
 
-        # Get all league nights for this season
-        cursor.execute('''
-            SELECT id, date FROM league_nights
-            WHERE season_id = ?
-            ORDER BY date
-        ''', (season_id,))
+            # Get all league nights for this season
+            cursor.execute('''
+                SELECT id, date FROM league_nights
+                WHERE season_id = ?
+                ORDER BY date
+            ''', (season_id,))
 
-        nights = [dict(row) for row in cursor.fetchall()]
-        night_ids = [n['id'] for n in nights]
+            nights = [dict(row) for row in cursor.fetchall()]
+            night_ids = [n['id'] for n in nights]
 
         if not night_ids:
             return {
