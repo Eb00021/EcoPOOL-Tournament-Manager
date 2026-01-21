@@ -73,7 +73,7 @@ class LiveScoreServer:
         self.reaction_manager = get_reaction_manager()
         # Register callback to notify clients of new reactions
         self.reaction_manager.register_callback(self._on_reaction)
-        
+
         # Register for global cleanup
         _active_servers.append(self)
         
@@ -83,7 +83,37 @@ class LiveScoreServer:
     def _on_reaction(self, reaction):
         """Callback when a new reaction is added - triggers update event."""
         self.notify_update()
-    
+
+    def _get_team_name(self, match: dict, team_num: int) -> str:
+        """Get a display name for a team in a match.
+
+        Args:
+            match: Match dict with player IDs
+            team_num: 1 or 2
+
+        Returns:
+            Team display name (e.g., "Player1 & Player2" or "Player1")
+        """
+        try:
+            db = self._get_thread_db()
+            if team_num == 1:
+                p1_id = match.get('team1_player1_id')
+                p2_id = match.get('team1_player2_id')
+            else:
+                p1_id = match.get('team2_player1_id')
+                p2_id = match.get('team2_player2_id')
+
+            p1 = db.get_player(p1_id) if p1_id else None
+            p2 = db.get_player(p2_id) if p2_id else None
+
+            if p1 and p2:
+                return f"{p1.name} & {p2.name}"
+            elif p1:
+                return p1.name
+            return f"Team {team_num}"
+        except Exception:
+            return f"Team {team_num}"
+
     def _get_thread_db(self):
         """Get a thread-local database connection for manager mode operations.
         
@@ -196,7 +226,7 @@ class LiveScoreServer:
                     abort(404)
             except Exception:
                 abort(404)
-        
+
         @self.app.route('/api/stream')
         def stream():
             """Server-Sent Events endpoint for live updates.
@@ -442,21 +472,29 @@ class LiveScoreServer:
                 SOLIDS = ['1', '2', '3', '4', '5', '6', '7']
                 STRIPES = ['9', '10', '11', '12', '13', '14', '15']
                 
-                # Get current group assignment and breaking team
+                # Get current group assignment, breaking team, and current turn
                 team1_group = current_game.get('team1_group', '')  # 'solids' or 'stripes'
                 breaking_team = current_game.get('breaking_team', 1)  # Which team is breaking
+                current_turn = current_game.get('current_turn', breaking_team)  # Which team is currently shooting
                 group_changed = False
+                turn_changed = False
                 
                 # Handle ball state changes
-                if ball_str in balls:
-                    # Toggle: if same team, remove; if different team, switch
-                    if balls[ball_str] == team:
+                # Use direct assignment for cycling (not toggle logic)
+                # Track if we're adding/changing a ball (vs removing) for turn tracking
+                is_adding_or_changing = False
+                old_team = balls.get(ball_str)
+                
+                if team == 0:
+                    # Remove ball (part of cycle: team2 → 0)
+                    if ball_str in balls:
                         del balls[ball_str]
-                    else:
-                        balls[ball_str] = team
+                        # Removing a ball - don't change turn
                 else:
-                    if team != 0:  # Only add if assigning to a team
-                        balls[ball_str] = team
+                    # Always set to requested team (cycling: 0 → team1, team1 → team2, team2 → 0)
+                    # This ensures cycling works correctly regardless of current state
+                    balls[ball_str] = team
+                    is_adding_or_changing = True  # Adding or changing ball assignment
                 
                 # AUTO-ASSIGN GROUP: If no group assigned yet and a non-8 ball is pocketed
                 # The BREAKING TEAM gets the group based on what ball type is pocketed first
@@ -510,6 +548,35 @@ class LiveScoreServer:
                 team1_score = min(team1_score, 10)
                 team2_score = min(team2_score, 10)
                 
+                # Update current_turn based on turn switching rules
+                # Only update if we're adding or changing a ball (not removing) and it's not the 8-ball
+                if is_adding_or_changing:
+                    if ball_str == '8':
+                        # 8-ball ends the game - no turn switch needed
+                        pass
+                    elif team1_group and team in [1, 2]:
+                        # Determine which balls belong to which team
+                        if team1_group == 'solids':
+                            team1_balls = SOLIDS
+                            team2_balls = STRIPES
+                        else:
+                            team1_balls = STRIPES
+                            team2_balls = SOLIDS
+                        
+                        # Check if the pocketed ball belongs to the pocketing team
+                        if team == 1:
+                            owns_ball = ball_str in team1_balls
+                        else:
+                            owns_ball = ball_str in team2_balls
+                        
+                        # Switch turn if pocketed opponent's ball, keep turn if own ball
+                        if not owns_ball:
+                            # Switched to opponent's ball - switch turn
+                            current_turn = 2 if current_turn == 1 else 1
+                            turn_changed = True
+                        # If owns_ball, keep the turn (no change needed)
+                    # If no group assigned yet, we can't determine turn switching, so keep current turn
+                
                 # Check for illegal 8-ball pocket
                 # Case 1: 8-ball pocketed on the break (before groups assigned) - loss for pocketing team
                 # Case 2: 8-ball pocketed before clearing all assigned balls - loss for pocketing team
@@ -545,15 +612,15 @@ class LiveScoreServer:
                                 illegal_8ball = True
                                 illegal_8ball_losing_team = 2
                 
-                # Update game in database (include group if it changed)
+                # Update game in database (include group and turn if they changed)
                 conn = db.get_connection()
                 cursor = conn.cursor()
-                if group_changed:
+                if group_changed or turn_changed:
                     cursor.execute('''
                         UPDATE games 
-                        SET team1_score = ?, team2_score = ?, balls_pocketed = ?, team1_group = ?
+                        SET team1_score = ?, team2_score = ?, balls_pocketed = ?, team1_group = ?, current_turn = ?
                         WHERE id = ?
-                    ''', (team1_score, team2_score, json.dumps(balls), team1_group, current_game['id']))
+                    ''', (team1_score, team2_score, json.dumps(balls), team1_group, current_turn, current_game['id']))
                 else:
                     cursor.execute('''
                         UPDATE games 
@@ -643,13 +710,94 @@ class LiveScoreServer:
                 if not current_game:
                     return jsonify({'success': False, 'error': 'Game not found'})
                 
+                # Get current game state
+                balls_data = current_game.get('balls_pocketed', {})
+                if isinstance(balls_data, str):
+                    balls = json.loads(balls_data) if balls_data else {}
+                else:
+                    balls = balls_data if balls_data else {}
+                
+                team1_group = current_game.get('team1_group', '')
+                current_turn = current_game.get('current_turn', current_game.get('breaking_team', 1))
+                team1_score = current_game.get('team1_score', 0)
+                team2_score = current_game.get('team2_score', 0)
+                scores_updated = False
+                
+                # Determine which team shot the 8-ball
+                eight_ball_team = None
+                if '8' in balls:
+                    # 8-ball is already tracked in balls_pocketed
+                    eight_ball_team = balls['8']
+                else:
+                    # 8-ball not tracked - use current_turn to determine which team shot it
+                    eight_ball_team = current_turn
+                    # Add 8-ball to balls_pocketed with the team that shot it
+                    balls['8'] = eight_ball_team
+                    
+                    # Recalculate scores if 8-ball wasn't previously tracked
+                    # Define ball groups
+                    SOLIDS = ['1', '2', '3', '4', '5', '6', '7']
+                    STRIPES = ['9', '10', '11', '12', '13', '14', '15']
+                    
+                    # Recalculate scores from scratch
+                    team1_score = 0
+                    team2_score = 0
+                    
+                    for ball, pocketing_team in balls.items():
+                        if ball == '8':
+                            # 8-ball is worth 3 points to whoever pockets it legally
+                            if pocketing_team == 1:
+                                team1_score += 3
+                            elif pocketing_team == 2:
+                                team2_score += 3
+                        elif team1_group:
+                            # With group assignment: points go to the team whose group the ball belongs to
+                            if team1_group == 'solids':
+                                if ball in SOLIDS:
+                                    team1_score += 1
+                                elif ball in STRIPES:
+                                    team2_score += 1
+                            else:  # team1 has stripes
+                                if ball in STRIPES:
+                                    team1_score += 1
+                                elif ball in SOLIDS:
+                                    team2_score += 1
+                        else:
+                            # No group assignment yet: points go to pocketing team
+                            if pocketing_team == 1:
+                                team1_score += 1
+                            elif pocketing_team == 2:
+                                team2_score += 1
+                    
+                    # Cap at 10 points per team
+                    team1_score = min(team1_score, 10)
+                    team2_score = min(team2_score, 10)
+                    scores_updated = True
+                
                 conn = db.get_connection()
                 cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE games 
-                    SET winner_team = ?
-                    WHERE id = ?
-                ''', (winning_team, current_game['id']))
+                
+                # Update game with winner, balls_pocketed (if updated), and scores (if recalculated)
+                if scores_updated:
+                    cursor.execute('''
+                        UPDATE games 
+                        SET winner_team = ?, balls_pocketed = ?, team1_score = ?, team2_score = ?
+                        WHERE id = ?
+                    ''', (winning_team, json.dumps(balls), team1_score, team2_score, current_game['id']))
+                else:
+                    # Only update winner_team and balls_pocketed (if 8-ball was added)
+                    if '8' not in str(balls_data):
+                        cursor.execute('''
+                            UPDATE games 
+                            SET winner_team = ?, balls_pocketed = ?
+                            WHERE id = ?
+                        ''', (winning_team, json.dumps(balls), current_game['id']))
+                    else:
+                        cursor.execute('''
+                            UPDATE games 
+                            SET winner_team = ?
+                            WHERE id = ?
+                        ''', (winning_team, current_game['id']))
                 conn.commit()
                 
                 # Check if match is complete
@@ -659,20 +807,90 @@ class LiveScoreServer:
                 team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
                 team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
                 
+                match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
                     cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                     conn.commit()
-                
+                    match_complete = True
+
                 # Notify update
                 self.notify_update()
-                
+
                 return jsonify({'success': True})
             except Exception as e:
                 import traceback
                 error_msg = str(e)
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
-        
+
+        @self.app.route('/api/manager/edit-game-scores', methods=['POST'])
+        def edit_game_scores():
+            """Edit game scores manually (manager mode)."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                team1_score = data.get('team1_score')
+                team2_score = data.get('team2_score')
+                session_token = data.get('session_token')
+
+                # Verify session token
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+                # Validate inputs
+                if team1_score is None or team2_score is None:
+                    return jsonify({'success': False, 'error': 'team1_score and team2_score are required'}), 400
+                
+                try:
+                    team1_score = int(team1_score)
+                    team2_score = int(team2_score)
+                except (ValueError, TypeError):
+                    return jsonify({'success': False, 'error': 'Scores must be integers'}), 400
+
+                # Cap scores at 10 per team
+                team1_score = min(max(team1_score, 0), 10)
+                team2_score = min(max(team2_score, 0), 10)
+
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+
+                # Find the game
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+                
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+                
+                # Update game scores
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE games 
+                    SET team1_score = ?, team2_score = ?
+                    WHERE id = ?
+                ''', (team1_score, team2_score, current_game['id']))
+                conn.commit()
+                
+                # Notify update
+                self.notify_update()
+                
+                return jsonify({
+                    'success': True,
+                    'team1_score': team1_score,
+                    'team2_score': team2_score
+                })
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': f'Database error: {error_msg}'}), 500
+
         @self.app.route('/api/manager/set-group', methods=['POST'])
         def set_group():
             """Set the group assignment (solids/stripes) for a game."""
@@ -791,13 +1009,14 @@ class LiveScoreServer:
                     return jsonify({'success': False, 'error': 'Game not found'})
                 
                 # Update game in database
+                # Also update current_turn to match breaking_team (breaking team shoots first)
                 conn = db.get_connection()
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE games 
-                    SET breaking_team = ?
+                    SET breaking_team = ?, current_turn = ?
                     WHERE id = ?
-                ''', (breaking_team, current_game['id']))
+                ''', (breaking_team, breaking_team, current_game['id']))
                 conn.commit()
                 
                 # Notify update
@@ -859,16 +1078,16 @@ class LiveScoreServer:
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
                     cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                     conn.commit()
-                
+
                 # Notify update
                 self.notify_update()
-                
+
                 return jsonify({'success': True, 'golden_break': True, 'winning_team': winning_team})
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)}), 500
-        
+
         @self.app.route('/api/manager/set-early-8ball', methods=['POST'])
         def set_early_8ball():
             """Set early 8-ball (scratch/foul on 8) for a game."""

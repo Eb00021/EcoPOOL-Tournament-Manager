@@ -345,6 +345,27 @@
             color: var(--blue);
         }
         
+        /* Team number small labels for table cards and match lists */
+        .team-number-small {
+            font-size: 0.7em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-right: 6px;
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+        
+        .team-number-small.team1-small {
+            background: rgba(76, 175, 80, 0.15);
+            color: var(--green);
+        }
+        
+        .team-number-small.team2-small {
+            background: rgba(91, 163, 217, 0.15);
+            color: var(--blue);
+        }
+        
         .table-vs {
             font-size: 0.65em;
             color: var(--text-secondary);
@@ -772,7 +793,7 @@
             background: var(--wvu-gold);
             color: var(--wvu-blue);
         }
-        
+
         .manager-panel {
             background: var(--bg-card);
             border-radius: 15px;
@@ -1117,6 +1138,29 @@
         
         .scorecard-team:last-child .scorecard-team-name {
             color: var(--blue);
+        }
+        
+        /* Team number badges for scorecard */
+        .team-number-badge {
+            font-size: 0.7em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-bottom: 2px;
+        }
+        
+        .team-number-badge.team1-badge {
+            background: rgba(76, 175, 80, 0.2);
+            color: var(--green);
+            border: 1px solid rgba(76, 175, 80, 0.4);
+        }
+        
+        .team-number-badge.team2-badge {
+            background: rgba(91, 163, 217, 0.2);
+            color: var(--blue);
+            border: 1px solid rgba(91, 163, 217, 0.4);
         }
         
         .scorecard-team-name .group-badge {
@@ -1536,6 +1580,23 @@
             font-size: 0.85em;
             color: var(--text-secondary);
             margin-bottom: 5px;
+        }
+        
+        /* Team number labels for manager scorecard */
+        .team-number-label {
+            font-size: 0.75em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        
+        .team-number-label.team1-label {
+            color: var(--green);
+        }
+        
+        .team-number-label.team2-label {
+            color: var(--blue);
         }
         
         .manager-team-score .score {

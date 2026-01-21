@@ -24,29 +24,99 @@ class MatchGenerator:
 
     # ============ Pair Generation Methods ============
 
-    def generate_random_pairs(self, player_ids: list[int]) -> list[tuple[int, Optional[int]]]:
+    def generate_random_pairs(self, player_ids: list[int],
+                              season_id: Optional[int] = None) -> dict:
         """
         Generate random 2-player pairs from a list of player IDs.
-        Returns list of (player1_id, player2_id) tuples.
-        If odd number, last pair has only one player (lone wolf).
-        """
-        shuffled = player_ids.copy()
-        random.shuffle(shuffled)
+        Prefers players who haven't been paired together this season.
 
+        Args:
+            player_ids: List of player IDs to pair
+            season_id: Optional season ID for teammate history lookup
+
+        Returns:
+            Dict with 'pairs' list and 'has_repeat_teammates' flag.
+            Each pair is (player1_id, player2_id) tuple.
+            If odd number, last pair has only one player (lone wolf).
+        """
+        if len(player_ids) < 2:
+            return {
+                'pairs': [(player_ids[0], None)] if player_ids else [],
+                'has_repeat_teammates': False,
+                'repeat_teammate_pairs': []
+            }
+
+        # Get teammate pair history for this season
+        teammate_counts = {}
+        if season_id:
+            teammate_counts = self.db.get_teammate_pair_counts(season_id)
+
+        available = player_ids.copy()
+        random.shuffle(available)
         pairs = []
-        for i in range(0, len(shuffled), 2):
-            if i + 1 < len(shuffled):
-                pairs.append((shuffled[i], shuffled[i + 1]))
-            else:
-                pairs.append((shuffled[i], None))  # Lone wolf
+        repeat_pairs = []
 
-        return pairs
+        while len(available) >= 2:
+            # Pick first available player
+            player1 = available.pop(0)
 
-    def generate_skill_based_pairs(self, player_ids: list[int]) -> list[tuple[int, Optional[int]]]:
+            # Find best partner (lowest pair count)
+            best_partner_idx = 0
+            best_count = float('inf')
+
+            for i, player2 in enumerate(available):
+                pair_key = frozenset([player1, player2])
+                count = teammate_counts.get(pair_key, 0)
+
+                if count < best_count:
+                    best_count = count
+                    best_partner_idx = i
+                    if count == 0:
+                        break  # Found a player never paired with
+
+            partner = available.pop(best_partner_idx)
+            pairs.append((player1, partner))
+
+            # Track if this is a repeat pairing
+            if best_count > 0:
+                repeat_pairs.append((player1, partner, best_count))
+
+        # Handle lone wolf
+        if available:
+            pairs.append((available[0], None))
+
+        return {
+            'pairs': pairs,
+            'has_repeat_teammates': len(repeat_pairs) > 0,
+            'repeat_teammate_pairs': repeat_pairs
+        }
+
+    def generate_skill_based_pairs(self, player_ids: list[int],
+                                   season_id: Optional[int] = None) -> dict:
         """
-        Generate pairs that balance skill levels.
-        Pairs highest-ranked with lowest-ranked players.
+        Generate pairs that balance skill levels while avoiding repeat teammates.
+        Pairs highest-ranked with lowest-ranked players, preferring those
+        who haven't been paired together this season.
+
+        Args:
+            player_ids: List of player IDs to pair
+            season_id: Optional season ID for teammate history lookup
+
+        Returns:
+            Dict with 'pairs' list and 'has_repeat_teammates' flag.
         """
+        if len(player_ids) < 2:
+            return {
+                'pairs': [(player_ids[0], None)] if player_ids else [],
+                'has_repeat_teammates': False,
+                'repeat_teammate_pairs': []
+            }
+
+        # Get teammate pair history for this season
+        teammate_counts = {}
+        if season_id:
+            teammate_counts = self.db.get_teammate_pair_counts(season_id)
+
         # Get players with stats and sort by total points
         players_with_stats = []
         for pid in player_ids:
@@ -57,21 +127,46 @@ class MatchGenerator:
         # Sort by points descending
         players_with_stats.sort(key=lambda x: -x[1])
 
-        # Pair highest with lowest
         pairs = []
+        repeat_pairs = []
         sorted_ids = [p[0] for p in players_with_stats]
 
         while len(sorted_ids) >= 2:
-            # Take best and worst remaining
+            # Take best player
             best = sorted_ids.pop(0)
-            worst = sorted_ids.pop(-1) if sorted_ids else None
+
+            # Find the worst player that best hasn't been paired with
+            # (or least paired with if all have been paired)
+            best_partner_idx = len(sorted_ids) - 1  # Default: worst player
+            best_count = float('inf')
+
+            # Start from the worst and look for one not paired with best
+            for i in range(len(sorted_ids) - 1, -1, -1):
+                candidate = sorted_ids[i]
+                pair_key = frozenset([best, candidate])
+                count = teammate_counts.get(pair_key, 0)
+
+                if count < best_count:
+                    best_count = count
+                    best_partner_idx = i
+                    if count == 0:
+                        break  # Found someone never paired with
+
+            worst = sorted_ids.pop(best_partner_idx)
             pairs.append((best, worst))
+
+            if best_count > 0:
+                repeat_pairs.append((best, worst, best_count))
 
         # Handle odd player (lone wolf)
         if sorted_ids:
             pairs.append((sorted_ids[0], None))
 
-        return pairs
+        return {
+            'pairs': pairs,
+            'has_repeat_teammates': len(repeat_pairs) > 0,
+            'repeat_teammate_pairs': repeat_pairs
+        }
 
     def create_manual_pair(self, player1_id: int, player2_id: Optional[int]) -> tuple[int, Optional[int]]:
         """Create a manual pair from two player IDs."""
@@ -311,8 +406,9 @@ class MatchGenerator:
     # ============ Legacy Methods (kept for compatibility) ============
 
     def generate_random_partners(self, player_ids: list[int]) -> list[tuple[int, Optional[int]]]:
-        """Legacy alias for generate_random_pairs."""
-        return self.generate_random_pairs(player_ids)
+        """Legacy alias for generate_random_pairs (returns just pairs list)."""
+        result = self.generate_random_pairs(player_ids)
+        return result['pairs']
 
     def generate_match_pairings(self, teams: list[tuple[int, Optional[int]]],
                                  avoid_repeats: bool = True) -> list[dict]:

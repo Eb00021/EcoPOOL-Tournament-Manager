@@ -519,27 +519,55 @@ class MatchGeneratorView(ctk.CTkFrame):
     def create_pairs(self):
         """Create pairs based on selected mode."""
         selected_ids = self.get_selected_player_ids()
-        
+
         if len(selected_ids) < 2:
             messagebox.showwarning("Not Enough Players", "Please select at least 2 players.")
             return
-        
+
         mode = self.pair_mode_var.get()
-        
+
         # Save pair mode setting
         self.db.set_setting("match_gen_pair_mode", mode)
-        
+
+        # Get active season for teammate history lookup
+        season = self.db.get_active_season()
+        season_id = season.id if season else None
+
         if mode == "random":
-            self.current_pairs = self.generator.generate_random_pairs(selected_ids)
+            result = self.generator.generate_random_pairs(selected_ids, season_id=season_id)
+            self.current_pairs = result['pairs']
+            self._handle_repeat_teammates(result)
         elif mode == "skill":
-            self.current_pairs = self.generator.generate_skill_based_pairs(selected_ids)
+            result = self.generator.generate_skill_based_pairs(selected_ids, season_id=season_id)
+            self.current_pairs = result['pairs']
+            self._handle_repeat_teammates(result)
         elif mode == "manual":
             self._start_manual_pairing(selected_ids)
             return
-        
+
         self._update_pairs_display()
         self._update_buyins_display()
         self.generate_btn.configure(state="normal")
+
+    def _handle_repeat_teammates(self, result: dict):
+        """Show warning if there are repeat teammate pairings."""
+        if result.get('has_repeat_teammates', False):
+            repeat_pairs = result.get('repeat_teammate_pairs', [])
+            if repeat_pairs:
+                # Build warning message
+                pair_strs = []
+                for p1, p2, count in repeat_pairs:
+                    player1 = self.db.get_player(p1)
+                    player2 = self.db.get_player(p2)
+                    if player1 and player2:
+                        pair_strs.append(f"  {player1.name} & {player2.name} (paired {count}x before)")
+
+                msg = (
+                    "Some players have been teammates before this season:\n\n"
+                    + "\n".join(pair_strs)
+                    + "\n\nThis is unavoidable with the current player selection."
+                )
+                messagebox.showinfo("Repeat Teammates", msg)
     
     def _start_manual_pairing(self, player_ids: list[int]):
         """Start manual pairing mode."""
@@ -1084,13 +1112,17 @@ class MatchGeneratorView(ctk.CTkFrame):
         )
         self.current_league_night_id = league_night_id
         
-        # Create pairs in database
+        # Create pairs in database and record teammate history
         pair_id_map = {}  # pair_idx -> database pair_id
         for i, (p1, p2) in enumerate(self.current_pairs):
             pair_name = chr(65 + i)  # A, B, C...
             pair_id = self.db.create_pair(league_night_id, p1, p2, f"Pair {pair_name}")
             pair_id_map[i] = pair_id
-        
+
+            # Record teammate pairing for repeat prevention
+            if p2 is not None:  # Not a lone wolf
+                self.db.record_teammate_pair(season_id, p1, p2)
+
         # Save buy-ins
         for pid, paid in self.buyins_paid.items():
             self.db.set_buyin(league_night_id, pid, buyin, paid=paid)

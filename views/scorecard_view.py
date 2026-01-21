@@ -1482,9 +1482,10 @@ class ScorecardView(ctk.CTkFrame):
             
             # Subtle flash on the match status label
             flash_widget(self.match_status_label, flash_color="#ffd700", times=2)
-            
-            # Check if there's a queue and offer to start next game
-            self._check_queue_for_next_game()
+
+            # Note: Auto-start disabled to match web manager behavior.
+            # User should manually select next match from dropdown.
+            # self._check_queue_for_next_game()
     
     def _check_queue_for_next_game(self):
         """Check if there's a next game in the queue and offer to start it."""

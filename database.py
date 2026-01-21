@@ -103,6 +103,7 @@ class Game:
     golden_break: bool = False
     early_8ball_team: int = 0  # Team that committed early 8-ball foul (0 if none)
     breaking_team: int = 1  # 1 or 2
+    current_turn: int = 1  # 1 or 2 - which team is currently shooting
 
 
 class DatabaseManager:
@@ -248,6 +249,12 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass
         
+        # Add current_turn column to games table if it doesn't exist (migration)
+        try:
+            cursor.execute("ALTER TABLE games ADD COLUMN current_turn INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
         # Games table (individual games within a match)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS games (
@@ -288,7 +295,25 @@ class DatabaseManager:
                 value TEXT NOT NULL
             )
         ''')
-        
+
+        # Teammate pairs table - tracks historical pairings per season
+        # Used to prevent players from being partnered together repeatedly
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS teammate_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                season_id INTEGER NOT NULL,
+                player1_id INTEGER NOT NULL,
+                player2_id INTEGER NOT NULL,
+                pair_count INTEGER DEFAULT 1,
+                last_paired_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (season_id) REFERENCES seasons(id),
+                FOREIGN KEY (player1_id) REFERENCES players(id),
+                FOREIGN KEY (player2_id) REFERENCES players(id),
+                UNIQUE(season_id, player1_id, player2_id)
+            )
+        ''')
+
+
         conn.commit()
     
     # ============ Settings Operations ============
@@ -624,10 +649,11 @@ class DatabaseManager:
         """Create a new game within a match."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        # Initialize current_turn to breaking_team (the breaking team shoots first)
         cursor.execute('''
-            INSERT INTO games (match_id, game_number, breaking_team)
-            VALUES (?, ?, ?)
-        ''', (match_id, game_number, breaking_team))
+            INSERT INTO games (match_id, game_number, breaking_team, current_turn)
+            VALUES (?, ?, ?, ?)
+        ''', (match_id, game_number, breaking_team, breaking_team))
         conn.commit()
         return cursor.lastrowid
     
@@ -771,7 +797,119 @@ class DatabaseManager:
             matchup_counts[matchup] = matchup_counts.get(matchup, 0) + 1
         
         return matchup_counts
-    
+
+    # ============ Teammate Pair Operations ============
+
+    def get_teammate_pair_counts(self, season_id: int) -> dict:
+        """Get count of how many times each player pair has been teammates in a season.
+
+        Args:
+            season_id: The season ID to check
+
+        Returns:
+            Dict mapping frozenset of (player1_id, player2_id) to their pair count.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT player1_id, player2_id, pair_count
+            FROM teammate_pairs
+            WHERE season_id = ?
+        ''', (season_id,))
+
+        pair_counts = {}
+        for row in cursor.fetchall():
+            # Create normalized pair key (sorted tuple as frozenset)
+            pair_key = frozenset([row['player1_id'], row['player2_id']])
+            pair_counts[pair_key] = row['pair_count']
+
+        return pair_counts
+
+    def record_teammate_pair(self, season_id: int, player1_id: int, player2_id: int):
+        """Record that two players were paired as teammates.
+
+        Args:
+            season_id: The season ID
+            player1_id: First player ID
+            player2_id: Second player ID (can be None for lone wolf)
+        """
+        if player2_id is None:
+            return  # Don't record lone wolves
+
+        # Normalize order (smaller ID first)
+        p1, p2 = (min(player1_id, player2_id), max(player1_id, player2_id))
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Insert or increment pair count
+        cursor.execute('''
+            INSERT INTO teammate_pairs (season_id, player1_id, player2_id, pair_count, last_paired_date)
+            VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(season_id, player1_id, player2_id) DO UPDATE SET
+                pair_count = pair_count + 1,
+                last_paired_date = CURRENT_TIMESTAMP
+        ''', (season_id, p1, p2))
+        conn.commit()
+
+    def get_player_pair_history(self, season_id: int, player_id: int) -> dict:
+        """Get the pairing history for a specific player in a season.
+
+        Args:
+            season_id: The season ID
+            player_id: The player to check
+
+        Returns:
+            Dict mapping partner player IDs to pair count.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT player1_id, player2_id, pair_count
+            FROM teammate_pairs
+            WHERE season_id = ?
+              AND (player1_id = ? OR player2_id = ?)
+        ''', (season_id, player_id, player_id))
+
+        partner_counts = {}
+        for row in cursor.fetchall():
+            # Get the other player's ID
+            partner_id = row['player2_id'] if row['player1_id'] == player_id else row['player1_id']
+            partner_counts[partner_id] = row['pair_count']
+
+        return partner_counts
+
+    def get_best_available_partner(self, season_id: int, player_id: int,
+                                   available_players: list[int]) -> tuple[int, int]:
+        """Find the best available partner for a player (one with lowest pair count).
+
+        Args:
+            season_id: The season ID
+            player_id: The player needing a partner
+            available_players: List of available player IDs to choose from
+
+        Returns:
+            Tuple of (partner_id, pair_count) for the best match.
+        """
+        if not available_players:
+            return (None, 0)
+
+        partner_history = self.get_player_pair_history(season_id, player_id)
+
+        # Find player with lowest pair count
+        best_partner = None
+        best_count = float('inf')
+
+        for partner_id in available_players:
+            if partner_id == player_id:
+                continue
+            count = partner_history.get(partner_id, 0)
+            if count < best_count:
+                best_count = count
+                best_partner = partner_id
+
+        return (best_partner, best_count if best_count != float('inf') else 0)
+
     # ============ League Night Operations ============
     
     def create_league_night(self, date: str, location: str = "The Met Pool Hall",

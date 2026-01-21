@@ -156,7 +156,7 @@
         let openScorecardIsManager = false;
         let lastQueuePanelHash = null;  // Track queue panel state to avoid unnecessary redraws (null = first load)
         let lastMainUIHash = null;  // Track main UI state to avoid flickering
-        
+
         const BALL_COLORS = {
             1: 'solid-1', 2: 'solid-2', 3: 'solid-3', 4: 'solid-4',
             5: 'solid-5', 6: 'solid-6', 7: 'solid-7', 8: 'solid-8',
@@ -601,9 +601,9 @@
                 
                 teamsContent = `
                     <div class="table-teams">
-                        <div class="table-team team1">${team1Display} ${team1GroupLabel}</div>
+                        <div class="table-team team1"><span class="team-number-small team1-small">T1</span> ${team1Display} ${team1GroupLabel}</div>
                         <div class="table-vs">vs</div>
-                        <div class="table-team team2">${team2Display} ${team2GroupLabel}</div>
+                        <div class="table-team team2"><span class="team-number-small team2-small">T2</span> ${team2Display} ${team2GroupLabel}</div>
                     </div>
                 `;
             } else {
@@ -650,7 +650,7 @@
                     </div>
                     <div class="teams-container">
                         <div class="team">
-                            <div class="team-name">${escapeHtml(match.team1)}</div>
+                            <div class="team-name"><span class="team-number-small team1-small">T1</span> ${escapeHtml(match.team1)}</div>
                             <div class="score-box">
                                 <div class="game-score">${match.team1_games}</div>
                                 <div class="points-score">${match.team1_points} pts</div>
@@ -658,7 +658,7 @@
                         </div>
                         <div class="vs-divider">VS</div>
                         <div class="team">
-                            <div class="team-name">${escapeHtml(match.team2)}</div>
+                            <div class="team-name"><span class="team-number-small team2-small">T2</span> ${escapeHtml(match.team2)}</div>
                             <div class="score-box">
                                 <div class="game-score">${match.team2_games}</div>
                                 <div class="points-score">${match.team2_points} pts</div>
@@ -850,12 +850,18 @@
                 
                 <div class="scorecard-teams">
                     <div class="scorecard-team">
-                        <div class="scorecard-team-name">${escapeHtml(match.team1)} ${team1GroupBadge}</div>
+                        <div class="scorecard-team-name">
+                            <span class="team-number-badge team1-badge">Team 1</span>
+                            ${escapeHtml(match.team1)} ${team1GroupBadge}
+                        </div>
                         <div class="scorecard-team-score">${match.team1_games}</div>
                     </div>
                     <div style="color:var(--text-secondary);padding:20px">vs</div>
                     <div class="scorecard-team">
-                        <div class="scorecard-team-name">${escapeHtml(match.team2)} ${team2GroupBadge}</div>
+                        <div class="scorecard-team-name">
+                            <span class="team-number-badge team2-badge">Team 2</span>
+                            ${escapeHtml(match.team2)} ${team2GroupBadge}
+                        </div>
                         <div class="scorecard-team-score">${match.team2_games}</div>
                     </div>
                 </div>
@@ -937,10 +943,33 @@
             // Enhanced manager mode pool table with larger, more touch-friendly balls
             const allBalls = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
             
+            // Get current breaking team and group assignment (needed for ball assignment)
+            const breakingTeam = game.breaking_team || 1;
+            
             function createManagerBall(ballNum) {
                 const isStripe = ballNum >= 9 && ballNum <= 15;
                 // Check both string and number keys since JSON may use strings
-                const pocketedBy = ballsPocketed ? (ballsPocketed[ballNum] || ballsPocketed[String(ballNum)] || null) : null;
+                // Ensure we get a clean numeric value (1, 2, or null/undefined for 0)
+                let pocketedBy = null;
+                if (ballsPocketed) {
+                    // Try both numeric and string keys explicitly
+                    const ballKeyNum = ballNum;
+                    const ballKeyStr = String(ballNum);
+                    pocketedBy = ballsPocketed[ballKeyNum] !== undefined ? ballsPocketed[ballKeyNum] : 
+                                 (ballsPocketed[ballKeyStr] !== undefined ? ballsPocketed[ballKeyStr] : null);
+                    
+                    // Normalize to number if it's a string, or ensure it's null/undefined if not 1 or 2
+                    if (pocketedBy === '1' || pocketedBy === 1) {
+                        pocketedBy = 1;
+                    } else if (pocketedBy === '2' || pocketedBy === 2) {
+                        pocketedBy = 2;
+                    } else {
+                        pocketedBy = null; // Ensure null for on-table state
+                    }
+                }
+                
+                // Use 0 for on-table state to ensure proper cycling
+                const currentState = pocketedBy || 0;
                 
                 let stateClass = 'on-table';
                 let stateBadge = '';
@@ -957,7 +986,7 @@
                 
                 return `
                     <div class="manager-ball-btn ${stateClass} ${ballColorClass}" 
-                         onclick="cycleBallState(${match.id}, ${game.game_number}, ${ballNum}, ${pocketedBy || 0}, '${game.team1_group || ''}')"
+                         onclick="cycleBallState(${match.id}, ${game.game_number}, ${ballNum}, ${currentState}, '${game.team1_group || ''}', ${breakingTeam})"
                          title="Ball ${ballNum}">
                         <div class="ball-inner ${ballColorClass}">
                             <span class="ball-num">${ballNum}</span>
@@ -968,9 +997,6 @@
             }
             
             const ballsHtml = allBalls.map(createManagerBall).join('');
-            
-            // Get current breaking team and group assignment
-            const breakingTeam = game.breaking_team || 1;
             const team1Group = game.team1_group || '';
             const team2Group = team1Group === 'solids' ? 'stripes' : (team1Group === 'stripes' ? 'solids' : '');
             
@@ -1046,16 +1072,42 @@
                     
                     <div class="manager-score-display">
                         <div class="manager-team-score team1">
+                            <div class="team-number-label team1-label">Team 1</div>
                             <div class="team-label">${escapeHtml(match.team1)}${breakingTeam === 1 ? ' 🎯' : ''}</div>
-                            <div class="score">${game.team1_score || 0}</div>
+                            <div class="score" id="score-display-team1-${match.id}-${game.game_number}">${game.team1_score || 0}</div>
                             ${team1Group ? `<div class="group-label">${team1Group === 'solids' ? '⚫ Solids' : '⬜ Stripes'}</div>` : ''}
                         </div>
                         <div class="manager-score-divider">-</div>
                         <div class="manager-team-score team2">
+                            <div class="team-number-label team2-label">Team 2</div>
                             <div class="team-label">${escapeHtml(match.team2)}${breakingTeam === 2 ? ' 🎯' : ''}</div>
-                            <div class="score">${game.team2_score || 0}</div>
+                            <div class="score" id="score-display-team2-${match.id}-${game.game_number}">${game.team2_score || 0}</div>
                             ${team2Group ? `<div class="group-label">${team2Group === 'solids' ? '⚫ Solids' : '⬜ Stripes'}</div>` : ''}
                         </div>
+                    </div>
+                    
+                    <div class="manager-edit-scores-section" style="margin: 15px 0; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                        <div class="section-label" style="margin-bottom: 10px;">Edit Scores (if ball tracking wasn't used)</div>
+                        <div style="display: flex; gap: 10px; align-items: center; justify-content: center;">
+                            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size: 12px; color: #aaa;">${escapeHtml(match.team1)}</label>
+                                <input type="number" min="0" max="10" value="${game.team1_score || 0}" 
+                                       id="edit-score-team1-${match.id}-${game.game_number}"
+                                       style="width: 100%; padding: 8px; border: 1px solid #444; border-radius: 4px; background: #222; color: #fff; text-align: center; font-size: 16px; font-weight: bold;">
+                            </div>
+                            <div style="font-size: 20px; color: #666; margin-top: 20px;">-</div>
+                            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+                                <label style="font-size: 12px; color: #aaa;">${escapeHtml(match.team2)}</label>
+                                <input type="number" min="0" max="10" value="${game.team2_score || 0}" 
+                                       id="edit-score-team2-${match.id}-${game.game_number}"
+                                       style="width: 100%; padding: 8px; border: 1px solid #444; border-radius: 4px; background: #222; color: #fff; text-align: center; font-size: 16px; font-weight: bold;">
+                            </div>
+                        </div>
+                        <button class="manager-edit-scores-btn" 
+                                onclick="editGameScores(${match.id}, ${game.game_number})"
+                                style="margin-top: 10px; width: 100%; padding: 10px; background: #4CAF50; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                            💾 Save Scores
+                        </button>
                     </div>
                     
                     ${breakingTeamHtml}
@@ -1176,11 +1228,30 @@
             `;
         }
         
-        function cycleBallState(matchId, gameNumber, ballNum, currentState, team1Group) {
+        function cycleBallState(matchId, gameNumber, ballNum, currentState, team1Group, breakingTeam = 1) {
             // Check if user is authenticated as manager (either via full manager mode or scorecard manager mode)
             if (!managerAuthenticated && !openScorecardIsManager) {
                 console.log('Not authenticated for manager mode');
                 return;
+            }
+            
+            // Normalize currentState to ensure it's always 0, 1, or 2
+            // Handle null, undefined, or string values - be very explicit
+            let normalizedState = 0;
+            const stateNum = typeof currentState === 'number' ? currentState : parseInt(currentState);
+            if (stateNum === 1) {
+                normalizedState = 1;
+            } else if (stateNum === 2) {
+                normalizedState = 2;
+            } else {
+                normalizedState = 0; // Default to on table (0) for any other value
+            }
+            
+            // Check if this is the 8-ball and it's on the table
+            if (ballNum === 8 && normalizedState === 0) {
+                if (!confirm('⚠️ Warning: Pocketing the 8-ball will end the game!\n\nAre you sure you want to continue?')) {
+                    return; // User cancelled
+                }
             }
             
             // Haptic feedback on mobile - satisfying ball pocket feel
@@ -1200,7 +1271,7 @@
             // Cycle: 0 (on table) -> correct team -> other team -> 0 (on table)
             // If group is assigned, first click goes to the team that owns that ball type
             let newTeam = 0;
-            if (currentState === 0 || !currentState) {
+            if (normalizedState === 0) {
                 // First click - assign to correct team based on ball type and group
                 if (team1Group && !is8Ball) {
                     if (team1Group === 'solids') {
@@ -1211,12 +1282,14 @@
                         newTeam = isStripe ? 1 : 2;
                     }
                 } else {
-                    // No group assigned yet, default to team 1
-                    newTeam = 1;
+                    // No group assigned yet, default to breaking team (matches backend auto-assignment logic)
+                    newTeam = breakingTeam || 1;
                 }
-            } else if (currentState === 1) {
+            } else if (normalizedState === 1) {
+                // Currently on Team 1, cycle to Team 2
                 newTeam = 2;
-            } else if (currentState === 2) {
+            } else if (normalizedState === 2) {
+                // Currently on Team 2, cycle back to on table (0)
                 newTeam = 0;
             }
             
@@ -2242,6 +2315,73 @@
                 console.error('Error:', err);
                 haptic('error');
                 alert('Failed to reset table');
+            });
+        }
+        
+        function editGameScores(matchId, gameNumber) {
+            // Edit game scores manually
+            if (!managerAuthenticated && !openScorecardIsManager) {
+                alert('Manager mode not authenticated');
+                return;
+            }
+            
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
+                return;
+            }
+            
+            // Get scores from input fields
+            const team1ScoreInput = document.getElementById(`edit-score-team1-${matchId}-${gameNumber}`);
+            const team2ScoreInput = document.getElementById(`edit-score-team2-${matchId}-${gameNumber}`);
+            
+            if (!team1ScoreInput || !team2ScoreInput) {
+                alert('Score input fields not found');
+                return;
+            }
+            
+            const team1Score = parseInt(team1ScoreInput.value) || 0;
+            const team2Score = parseInt(team2ScoreInput.value) || 0;
+            
+            // Validate scores
+            if (team1Score < 0 || team1Score > 10 || team2Score < 0 || team2Score > 10) {
+                alert('Scores must be between 0 and 10');
+                return;
+            }
+            
+            haptic('medium');
+            
+            fetch('/api/manager/edit-game-scores', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    match_id: matchId,
+                    game_number: gameNumber,
+                    team1_score: team1Score,
+                    team2_score: team2Score,
+                    session_token: sessionToken
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    haptic('double');
+                    showToast('💾 Scores updated!');
+                    // Update the displayed scores
+                    const scoreDisplay1 = document.getElementById(`score-display-team1-${matchId}-${gameNumber}`);
+                    const scoreDisplay2 = document.getElementById(`score-display-team2-${matchId}-${gameNumber}`);
+                    if (scoreDisplay1) scoreDisplay1.textContent = data.team1_score;
+                    if (scoreDisplay2) scoreDisplay2.textContent = data.team2_score;
+                    // Refresh the scorecard to ensure everything is in sync
+                    setTimeout(() => refreshOpenScorecard(), 100);
+                } else {
+                    handleApiError(data, 'Failed to update scores');
+                }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                haptic('error');
+                alert('Failed to update scores');
             });
         }
         
