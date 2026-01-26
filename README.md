@@ -101,6 +101,7 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Profile pictures**: Player avatars displayed throughout the interface
 - **Connection status**: Real-time connection indicator with auto-reconnect
 - **Spectator Reactions**: Real-time emoji reactions from viewers (🎯 Nice shot!, 🔥 Great game!, 👏 GG!, etc.)
+- **Ngrok warning bypass**: Browser warning automatically disabled for seamless access
 - Start/stop from the sidebar; share the URL or QR with spectators
 
 ### 📲 Manager Mode (Mobile Scoring)
