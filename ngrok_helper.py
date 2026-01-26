@@ -22,9 +22,6 @@ def start_tunnel(port: int, auth_token: Optional[str] = None) -> Tuple[bool, str
     try:
         from pyngrok import ngrok, conf
 
-        if auth_token:
-            conf.get_default().auth_token = auth_token
-
         # Create a temporary ngrok config file to disable browser warning
         # This is the most reliable way to configure request headers
         config_content = f"""version: "2"
@@ -46,7 +43,11 @@ tunnels:
             _config_file = config_path
             
             # Configure pyngrok to use this config file
-            pyngrok_config = conf.PyngrokConfig(config_path=config_path)
+            # Preserve auth_token if provided
+            pyngrok_config = conf.PyngrokConfig(
+                config_path=config_path,
+                auth_token=auth_token if auth_token else None
+            )
             conf.set_default(pyngrok_config)
             
             # Connect using the named tunnel from config
@@ -62,6 +63,9 @@ tunnels:
                     pass
             _config_file = None
             # Fallback: try simple connection without warning bypass
+            # Make sure auth_token is set for fallback too
+            if auth_token:
+                conf.get_default().auth_token = auth_token
             _tunnel = ngrok.connect(port, "http")
             _public_url = _tunnel.public_url
             return True, _public_url
