@@ -8,6 +8,55 @@ from datetime import datetime
 from typing import Optional, List
 from dataclasses import dataclass, field
 import json
+import logging
+
+# Configure logging for database migrations
+_db_logger = logging.getLogger(__name__)
+
+# Constants for scoring rules
+# Legal 8-ball win: 7 regular balls (1 pt each) + 8-ball (3 pts) = 10 points
+LEGAL_8BALL_MIN_SCORE = 10
+
+
+def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+    """Check if a column exists in a table.
+
+    Args:
+        cursor: SQLite cursor
+        table: Table name
+        column: Column name
+
+    Returns:
+        True if column exists, False otherwise
+    """
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    return column in columns
+
+
+def _safe_add_column(cursor: sqlite3.Cursor, table: str, column: str,
+                     column_def: str) -> bool:
+    """Safely add a column to a table if it doesn't exist.
+
+    Args:
+        cursor: SQLite cursor
+        table: Table name
+        column: Column name
+        column_def: Full column definition (e.g., "INTEGER DEFAULT 0")
+
+    Returns:
+        True if column was added, False if it already existed
+    """
+    if _column_exists(cursor, table, column):
+        return False
+
+    try:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+        _db_logger.info(f"Added column {column} to {table}")
+        return True
+    except sqlite3.OperationalError as e:
+        _db_logger.warning(f"Failed to add column {column} to {table}: {e}")
+        return False
 
 
 @dataclass
@@ -137,10 +186,7 @@ class DatabaseManager:
         ''')
         
         # Add profile_picture column if it doesn't exist (migration for existing DBs)
-        try:
-            cursor.execute("ALTER TABLE players ADD COLUMN profile_picture TEXT DEFAULT ''")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        _safe_add_column(cursor, 'players', 'profile_picture', "TEXT DEFAULT ''")
         
         # Seasons table (NEW)
         cursor.execute('''
@@ -169,14 +215,8 @@ class DatabaseManager:
         ''')
         
         # Add new columns to league_nights if they don't exist
-        try:
-            cursor.execute("ALTER TABLE league_nights ADD COLUMN season_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("ALTER TABLE league_nights ADD COLUMN table_count INTEGER DEFAULT 3")
-        except sqlite3.OperationalError:
-            pass
+        _safe_add_column(cursor, 'league_nights', 'season_id', "INTEGER")
+        _safe_add_column(cursor, 'league_nights', 'table_count', "INTEGER DEFAULT 3")
         
         # League night pairs table (NEW) - Fixed pairs for the night
         cursor.execute('''
@@ -239,21 +279,15 @@ class DatabaseManager:
         ''')
         
         # Add new columns to matches if they don't exist (migration)
-        for col, default in [("pair1_id", "INTEGER"), ("pair2_id", "INTEGER"), 
-                             ("queue_position", "INTEGER DEFAULT 0"), 
+        for col, default in [("pair1_id", "INTEGER"), ("pair2_id", "INTEGER"),
+                             ("queue_position", "INTEGER DEFAULT 0"),
                              ("status", "TEXT DEFAULT 'queued'"),
                              ("season_id", "INTEGER"),
                              ("round_number", "INTEGER DEFAULT 1")]:
-            try:
-                cursor.execute(f"ALTER TABLE matches ADD COLUMN {col} {default}")
-            except sqlite3.OperationalError:
-                pass
-        
+            _safe_add_column(cursor, 'matches', col, default)
+
         # Add current_turn column to games table if it doesn't exist (migration)
-        try:
-            cursor.execute("ALTER TABLE games ADD COLUMN current_turn INTEGER DEFAULT 1")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        _safe_add_column(cursor, 'games', 'current_turn', "INTEGER DEFAULT 1")
         
         # Games table (individual games within a match)
         cursor.execute('''
@@ -486,9 +520,9 @@ class DatabaseManager:
                 breaking_team = 1
             
             # Check for legal 8-ball pocket (winner who cleared their balls)
-            # This is tracked as: team won + team1_score >= 10 (7 balls + 8-ball = 10 pts)
-            team1_legal_8ball = row['winner_team'] == 1 and row['team1_score'] >= 10
-            team2_legal_8ball = row['winner_team'] == 2 and row['team2_score'] >= 10
+            # Legal 8-ball: 7 regular balls + 8-ball = LEGAL_8BALL_MIN_SCORE points
+            team1_legal_8ball = row['winner_team'] == 1 and row['team1_score'] >= LEGAL_8BALL_MIN_SCORE
+            team2_legal_8ball = row['winner_team'] == 2 and row['team2_score'] >= LEGAL_8BALL_MIN_SCORE
             
             # Update stats for team 1 players
             for pid in team1_players:
@@ -553,8 +587,8 @@ class DatabaseManager:
                 total_points += row['team1_score']
                 if row['winner_team'] == 1:
                     games_won += 1
-                    # Legal 8-ball if won with 10+ points (7 balls + 8-ball)
-                    if row['team1_score'] >= 10:
+                    # Legal 8-ball if won with required minimum points
+                    if row['team1_score'] >= LEGAL_8BALL_MIN_SCORE:
                         eight_ball_sinks += 1
                 if row['golden_break'] and breaking_team == 1:
                     golden_breaks += 1
@@ -562,7 +596,7 @@ class DatabaseManager:
                 total_points += row['team2_score']
                 if row['winner_team'] == 2:
                     games_won += 1
-                    if row['team2_score'] >= 10:
+                    if row['team2_score'] >= LEGAL_8BALL_MIN_SCORE:
                         eight_ball_sinks += 1
                 if row['golden_break'] and breaking_team == 2:
                     golden_breaks += 1

@@ -37,6 +37,12 @@ except ImportError:
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Import version from package
+try:
+    from __init__ import __version__
+except ImportError:
+    __version__ = "3.0.0"
+
 from fonts import load_custom_font, get_font, get_font_family
 
 from database import DatabaseManager
@@ -129,8 +135,9 @@ class EcoPoolApp(ctk.CTk):
                 logo_height = int(logo_width / aspect)
                 logo_ctk = ctk.CTkImage(light_image=logo_img, dark_image=logo_img, size=(logo_width, logo_height))
                 ctk.CTkLabel(logo_frame, image=logo_ctk, text="").pack()
-            except Exception:
-                # Fallback to text if image fails
+            except (IOError, OSError, FileNotFoundError, ValueError) as e:
+                # Fallback to text if image fails to load or is corrupted
+                print(f"Failed to load logo image: {e}")
                 ctk.CTkLabel(logo_frame, text="EcoPOOL", font=get_font(22, "bold"), text_color="#EAAA00").pack()
         else:
             ctk.CTkLabel(logo_frame, text="EcoPOOL", font=get_font(22, "bold"), text_color="#EAAA00").pack()
@@ -281,7 +288,7 @@ class EcoPoolApp(ctk.CTk):
         # Version info at bottom (fixed)
         ctk.CTkLabel(
             self.sidebar,
-            text="v3.0 - WVU EcoCAR",
+            text=f"v{__version__} - WVU EcoCAR",
             font=get_font(10),
             text_color="#555555"
         ).pack(side="bottom", pady=8)

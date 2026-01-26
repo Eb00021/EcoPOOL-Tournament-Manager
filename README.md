@@ -222,6 +222,24 @@ EcoPOOL Toolkit/
 └── ecopool_league.db       # SQLite database (created on first run)
 ```
 
+## Security
+
+The application implements several security measures:
+
+### Authentication
+- **Password Hashing**: Manager passwords and payment PINs are hashed using PBKDF2-HMAC-SHA256 with 100,000 iterations and random salts
+- **Constant-Time Comparison**: All credential verification uses `hmac.compare_digest()` to prevent timing attacks
+- **Session Management**: Web sessions expire after 24 hours with automatic cleanup
+
+### Web Server
+- **Payment Portal Authentication**: All sensitive payment endpoints require PIN authentication
+- **Path Traversal Protection**: Profile picture serving validates paths using `os.path.realpath()` and file extension whitelisting
+- **File Type Validation**: Only image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) can be served
+
+### Initial Setup
+- Payment portal PIN must be configured through the desktop application (Settings → Security)
+- Manager password is required to modify payment settings via web interface
+
 ## Database
 
 SQLite (`ecopool_league.db`) is created on first run. Main tables:

@@ -13,6 +13,8 @@ import atexit
 import signal
 import sys
 import secrets
+import hmac
+import hashlib
 from datetime import datetime
 from flask import Flask, Response, render_template, jsonify, send_file, abort, request
 import logging
@@ -20,6 +22,68 @@ import logging
 # Suppress Flask's default logging to keep console clean
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+
+# ============ Security Helper Functions ============
+
+def _hash_credential(credential: str, salt: bytes = None) -> str:
+    """Hash a password or PIN using PBKDF2-HMAC-SHA256.
+
+    Args:
+        credential: The plaintext password/PIN to hash
+        salt: Optional salt bytes. If None, generates a new random salt.
+
+    Returns:
+        A string in format "salt_hex:hash_hex" for storage
+    """
+    if salt is None:
+        salt = os.urandom(32)
+
+    # Use PBKDF2 with 100,000 iterations (OWASP recommended minimum)
+    key = hashlib.pbkdf2_hmac(
+        'sha256',
+        credential.encode('utf-8'),
+        salt,
+        iterations=100000
+    )
+
+    return f"{salt.hex()}:{key.hex()}"
+
+
+def _verify_credential(credential: str, stored_hash: str) -> bool:
+    """Verify a password/PIN against its stored hash using constant-time comparison.
+
+    Args:
+        credential: The plaintext credential to verify
+        stored_hash: The stored hash in "salt_hex:hash_hex" format
+
+    Returns:
+        True if the credential matches, False otherwise
+    """
+    if not stored_hash or ':' not in stored_hash:
+        # Legacy plaintext password - migrate on next set
+        # Use constant-time comparison even for plaintext
+        return hmac.compare_digest(credential, stored_hash) if stored_hash else False
+
+    try:
+        salt_hex, hash_hex = stored_hash.split(':', 1)
+        salt = bytes.fromhex(salt_hex)
+        expected_hash = bytes.fromhex(hash_hex)
+
+        # Recompute the hash with the same salt
+        actual_hash = hashlib.pbkdf2_hmac(
+            'sha256',
+            credential.encode('utf-8'),
+            salt,
+            iterations=100000
+        )
+
+        # Constant-time comparison to prevent timing attacks
+        return hmac.compare_digest(actual_hash, expected_hash)
+    except (ValueError, TypeError):
+        # Invalid hash format - treat as legacy plaintext
+        return hmac.compare_digest(credential, stored_hash)
+
 
 # Global reference for cleanup
 _active_servers = []
@@ -68,11 +132,16 @@ class LiveScoreServer:
         self._session_cleanup_interval = 60 * 60  # Cleanup every hour
         self._last_session_cleanup = time.time()
 
-        # Initialize reaction manager
-        from spectator_reactions import get_reaction_manager
-        self.reaction_manager = get_reaction_manager()
-        # Register callback to notify clients of new reactions
-        self.reaction_manager.register_callback(self._on_reaction)
+        # Initialize reaction manager with import guard
+        try:
+            from spectator_reactions import get_reaction_manager
+            self.reaction_manager = get_reaction_manager()
+            # Register callback to notify clients of new reactions
+            self.reaction_manager.register_callback(self._on_reaction)
+        except ImportError:
+            # Fallback if spectator_reactions module is not available
+            self.reaction_manager = None
+            print("Warning: spectator_reactions module not found. Reactions disabled.")
 
         # Register for global cleanup
         _active_servers.append(self)
@@ -188,6 +257,31 @@ class LiveScoreServer:
         if expired_tokens:
             print(f"Cleaned up {len(expired_tokens)} expired manager sessions")
 
+    def _require_payment_auth(self) -> tuple:
+        """Check if request has valid payment portal authentication.
+
+        Returns:
+            Tuple of (is_authenticated, error_response).
+            If authenticated, error_response is None.
+            If not authenticated, error_response is a tuple of (response_dict, status_code).
+        """
+        # Check for PIN in request headers or query params
+        pin = request.headers.get('X-Payment-PIN') or request.args.get('pin')
+
+        if not pin:
+            return False, ({'error': 'Authentication required', 'auth_required': True}, 401)
+
+        db = self._get_thread_db()
+        stored_pin = db.get_setting('payment_portal_pin', '')
+
+        if not stored_pin:
+            return False, ({'error': 'Payment portal not configured'}, 403)
+
+        if not _verify_credential(pin, stored_pin):
+            return False, ({'error': 'Invalid PIN', 'auth_required': True}, 401)
+
+        return True, None
+
     def _setup_routes(self):
         """Setup Flask routes."""
         
@@ -208,23 +302,31 @@ class LiveScoreServer:
         @self.app.route('/api/pfp/<path:filename>')
         def get_profile_picture(filename):
             """Serve profile picture images."""
+            # Allowed image extensions for security
+            ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+
             try:
+                # Validate filename has allowed extension
+                _, ext = os.path.splitext(filename.lower())
+                if ext not in ALLOWED_EXTENSIONS:
+                    abort(403)  # Forbidden - invalid file type
+
                 # Look for the file in the profile_pictures directory
                 pictures_dir = os.path.join(os.path.dirname(__file__), "profile_pictures")
-                filepath = os.path.join(pictures_dir, filename)
-                
-                # Security check - ensure the file is within the pictures directory
-                filepath = os.path.abspath(filepath)
-                pictures_dir = os.path.abspath(pictures_dir)
-                
-                if not filepath.startswith(pictures_dir):
+
+                # Security check - use realpath to resolve symlinks and prevent traversal
+                filepath = os.path.realpath(os.path.join(pictures_dir, filename))
+                pictures_dir = os.path.realpath(pictures_dir)
+
+                # Ensure file is within pictures directory (handles symlinks and ../)
+                if not filepath.startswith(pictures_dir + os.sep):
                     abort(403)
-                
+
                 if os.path.exists(filepath) and os.path.isfile(filepath):
                     return send_file(filepath)
                 else:
                     abort(404)
-            except Exception:
+            except (OSError, IOError):
                 abort(404)
 
         @self.app.route('/api/stream')
@@ -295,7 +397,7 @@ class LiveScoreServer:
 
                 stored_password = db.get_setting('manager_password', '')
 
-                if stored_password and password == stored_password:
+                if stored_password and _verify_credential(password, stored_password):
                     # Generate a session token and store it server-side with timestamp
                     session_token = secrets.token_urlsafe(32)
                     with self._session_lock:
@@ -1541,18 +1643,20 @@ class LiveScoreServer:
                 data = request.get_json()
                 pin = data.get('pin', '')
                 db = self._get_thread_db()
-                
+
                 # Get stored payment portal PIN
                 stored_pin = db.get_setting('payment_portal_pin', '')
-                
-                # If no PIN is set, allow any PIN to set it initially
+
+                # If no PIN is set, require manager password to set initial PIN
                 if not stored_pin:
-                    # Set the first PIN entered as the PIN
-                    db.set_setting('payment_portal_pin', pin)
-                    return jsonify({'success': True, 'message': 'PIN set successfully'})
-                
-                # Verify PIN
-                if pin == stored_pin:
+                    return jsonify({
+                        'success': False,
+                        'error': 'No PIN configured. Please use the desktop app to set a payment PIN.',
+                        'needs_setup': True
+                    })
+
+                # Verify PIN using constant-time comparison
+                if _verify_credential(pin, stored_pin):
                     return jsonify({'success': True})
                 else:
                     return jsonify({'success': False, 'error': 'Incorrect PIN'})
@@ -1568,23 +1672,24 @@ class LiveScoreServer:
                 data = request.get_json()
                 new_pin = data.get('pin', '')
                 manager_password = data.get('manager_password', '')
-                
+
                 if not new_pin:
                     return jsonify({'success': False, 'error': 'PIN required'})
-                
+
                 if len(new_pin) < 4:
                     return jsonify({'success': False, 'error': 'PIN must be at least 4 characters'})
-                
-                # Verify manager password
+
+                # Verify manager password using secure comparison
                 db = self._get_thread_db()
                 stored_manager_password = db.get_setting('manager_password', '')
-                
-                if not stored_manager_password or manager_password != stored_manager_password:
+
+                if not stored_manager_password or not _verify_credential(manager_password, stored_manager_password):
                     return jsonify({'success': False, 'error': 'Manager password required'})
-                
-                # Set new PIN
-                db.set_setting('payment_portal_pin', new_pin)
-                
+
+                # Hash and store the new PIN
+                hashed_pin = _hash_credential(new_pin)
+                db.set_setting('payment_portal_pin', hashed_pin)
+
                 return jsonify({'success': True, 'message': 'Payment portal PIN updated'})
             except Exception as e:
                 import traceback
@@ -1635,7 +1740,12 @@ class LiveScoreServer:
 
         @self.app.route('/api/payments/audit-log')
         def get_audit_log():
-            """Get payment audit log."""
+            """Get payment audit log (requires payment portal authentication)."""
+            # Require authentication for sensitive payment data
+            is_auth, error = self._require_payment_auth()
+            if not is_auth:
+                return jsonify(error[0]), error[1]
+
             try:
                 from venmo_integration import VenmoIntegration
                 db = self._get_thread_db()
@@ -1650,7 +1760,12 @@ class LiveScoreServer:
 
         @self.app.route('/api/payments/mark-paid', methods=['POST'])
         def mark_payment_paid():
-            """Mark a payment as paid from web admin."""
+            """Mark a payment as paid from web admin (requires payment portal authentication)."""
+            # Require authentication for payment modifications
+            is_auth, error = self._require_payment_auth()
+            if not is_auth:
+                return jsonify(error[0]), error[1]
+
             try:
                 from venmo_integration import VenmoIntegration
                 db = self._get_thread_db()
@@ -1667,7 +1782,12 @@ class LiveScoreServer:
 
         @self.app.route('/api/payments/all-requests')
         def get_all_payment_requests():
-            """Get all payment requests for a league night."""
+            """Get all payment requests for a league night (requires payment portal authentication)."""
+            # Require authentication for sensitive payment data
+            is_auth, error = self._require_payment_auth()
+            if not is_auth:
+                return jsonify(error[0]), error[1]
+
             try:
                 from venmo_integration import VenmoIntegration
                 db = self._get_thread_db()
@@ -1680,32 +1800,37 @@ class LiveScoreServer:
                         league_night_id = night['id']
                     else:
                         return jsonify({'requests': [], 'error': 'No active league night'})
-                requests = venmo_mgr.get_all_requests(league_night_id)
-                return jsonify({'requests': requests, 'league_night_id': league_night_id})
+                requests_list = venmo_mgr.get_all_requests(league_night_id)
+                return jsonify({'requests': requests_list, 'league_night_id': league_night_id})
             except Exception as e:
                 return jsonify({'error': str(e)})
 
         @self.app.route('/api/payments/create-request', methods=['POST'])
         def create_payment_request():
-            """Create a new payment request from web interface."""
+            """Create a new payment request from web interface (requires payment portal authentication)."""
+            # Require authentication for payment modifications
+            is_auth, error = self._require_payment_auth()
+            if not is_auth:
+                return jsonify(error[0]), error[1]
+
             try:
                 from venmo_integration import VenmoIntegration
                 db = self._get_thread_db()
                 venmo_mgr = VenmoIntegration(db)
-                
+
                 data = request.get_json()
                 player_id = data.get('player_id')
                 amount = data.get('amount')
                 note = data.get('note', 'EcoPOOL League Buy-In')
-                
+
                 if not player_id or not amount:
                     return jsonify({'success': False, 'error': 'player_id and amount required'})
-                
+
                 # Get current league night
                 night = db.get_current_league_night()
                 if not night:
                     return jsonify({'success': False, 'error': 'No active league night'})
-                
+
                 request_id = venmo_mgr.create_payment_request(
                     night['id'],
                     player_id,
@@ -1713,7 +1838,7 @@ class LiveScoreServer:
                     note,
                     performed_by='web_admin'
                 )
-                
+
                 return jsonify({'success': True, 'request_id': request_id})
             except Exception as e:
                 import traceback
@@ -1722,7 +1847,12 @@ class LiveScoreServer:
 
         @self.app.route('/api/payments/send-request', methods=['POST'])
         def send_payment_request():
-            """Send a payment request - returns link to open on client device."""
+            """Send a payment request - returns link to open on client device (requires payment portal authentication)."""
+            # Require authentication for payment modifications
+            is_auth, error = self._require_payment_auth()
+            if not is_auth:
+                return jsonify(error[0]), error[1]
+
             try:
                 from venmo_integration import VenmoIntegration
                 db = self._get_thread_db()
@@ -1781,14 +1911,18 @@ class LiveScoreServer:
         @self.app.route('/api/reaction', methods=['POST'])
         def add_reaction():
             """Add a spectator reaction."""
+            # Handle case where reaction manager is not available
+            if self.reaction_manager is None:
+                return jsonify({'success': False, 'error': 'Reactions not available'})
+
             try:
                 data = request.get_json()
                 reaction_type = data.get('type')
                 sender = data.get('sender', 'Anonymous')
                 client_ip = request.remote_addr
-                
+
                 reaction = self.reaction_manager.add_reaction(reaction_type, sender, client_ip)
-                
+
                 if reaction:
                     return jsonify({
                         'success': True,
@@ -1803,10 +1937,14 @@ class LiveScoreServer:
                     return jsonify({'success': False, 'error': 'Rate limited or invalid reaction type'})
             except Exception as e:
                 return jsonify({'success': False, 'error': str(e)})
-        
+
         @self.app.route('/api/reactions')
         def get_reactions():
             """Get active reactions."""
+            # Handle case where reaction manager is not available
+            if self.reaction_manager is None:
+                return jsonify({'reactions': []})
+
             try:
                 reactions = self.reaction_manager.get_reaction_json()
                 return jsonify({'reactions': reactions})
@@ -1890,8 +2028,8 @@ class LiveScoreServer:
                 for i, entry in enumerate(leaderboard)
             ]
             
-            # Get active reactions
-            reactions = self.reaction_manager.get_reaction_json()
+            # Get active reactions (if available)
+            reactions = self.reaction_manager.get_reaction_json() if self.reaction_manager else []
             
             # Calculate overall league stats
             total_games = sum(p['games'] for p in leaderboard_data)

@@ -373,6 +373,11 @@ class MatchGenerator:
             p1 = self.db.get_player(p1_id)
             p2 = self.db.get_player(p2_id) if p2_id else None
 
+            # Handle case where player lookup fails
+            if not p1:
+                pair_names.append(f"Unknown Player {p1_id}")
+                continue
+
             if p2:
                 pair_names.append(f"{p1.name} & {p2.name}")
             else:
@@ -390,8 +395,14 @@ class MatchGenerator:
         p2_1 = self.db.get_player(pair2[0])
         p2_2 = self.db.get_player(pair2[1]) if pair2[1] else None
 
-        team1_name = f"{p1_1.name} & {p1_2.name}" if p1_2 else f"{p1_1.name}"
-        team2_name = f"{p2_1.name} & {p2_2.name}" if p2_2 else f"{p2_1.name}"
+        # Handle null players with fallback names
+        p1_1_name = p1_1.name if p1_1 else "Unknown"
+        p1_2_name = p1_2.name if p1_2 else None
+        p2_1_name = p2_1.name if p2_1 else "Unknown"
+        p2_2_name = p2_2.name if p2_2 else None
+
+        team1_name = f"{p1_1_name} & {p1_2_name}" if p1_2_name else p1_1_name
+        team2_name = f"{p2_1_name} & {p2_2_name}" if p2_2_name else p2_1_name
 
         return {
             'team1': team1_name,

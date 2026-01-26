@@ -431,19 +431,33 @@ class AdvancedStatsManager:
         p1 = self.db.get_player(p1_id)
         p2 = self.db.get_player(p2_id) if p2_id else None
 
-        if p2:
+        if p1 and p2:
             return {
-                'combined_win_rate': (p1.win_rate + p2.win_rate) / 2 if p1 else 0,
-                'combined_avg_points': (p1.avg_points + p2.avg_points) / 2 if p1 else 0,
-                'total_games': (p1.games_played if p1 else 0) + (p2.games_played if p2 else 0),
-                'total_golden_breaks': (p1.golden_breaks if p1 else 0) + (p2.golden_breaks if p2 else 0)
+                'combined_win_rate': (p1.win_rate + p2.win_rate) / 2,
+                'combined_avg_points': (p1.avg_points + p2.avg_points) / 2,
+                'total_games': p1.games_played + p2.games_played,
+                'total_golden_breaks': p1.golden_breaks + p2.golden_breaks
+            }
+        elif p1:
+            return {
+                'combined_win_rate': p1.win_rate,
+                'combined_avg_points': p1.avg_points,
+                'total_games': p1.games_played,
+                'total_golden_breaks': p1.golden_breaks
+            }
+        elif p2:
+            return {
+                'combined_win_rate': p2.win_rate,
+                'combined_avg_points': p2.avg_points,
+                'total_games': p2.games_played,
+                'total_golden_breaks': p2.golden_breaks
             }
         else:
             return {
-                'combined_win_rate': p1.win_rate if p1 else 0,
-                'combined_avg_points': p1.avg_points if p1 else 0,
-                'total_games': p1.games_played if p1 else 0,
-                'total_golden_breaks': p1.golden_breaks if p1 else 0
+                'combined_win_rate': 0,
+                'combined_avg_points': 0,
+                'total_games': 0,
+                'total_golden_breaks': 0
             }
 
     def _get_team_form_score(self, p1_id: int, p2_id: Optional[int]) -> float:

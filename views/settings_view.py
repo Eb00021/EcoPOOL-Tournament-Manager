@@ -7,9 +7,32 @@ import customtkinter as ctk
 from tkinter import messagebox, filedialog
 import os
 import shutil
+import hashlib
 from datetime import datetime
 from database import DatabaseManager
 from fonts import get_font
+
+
+def _hash_credential(credential: str) -> str:
+    """Hash a password or PIN using PBKDF2-HMAC-SHA256.
+
+    Args:
+        credential: The plaintext password/PIN to hash
+
+    Returns:
+        A string in format "salt_hex:hash_hex" for storage
+    """
+    salt = os.urandom(32)
+
+    # Use PBKDF2 with 100,000 iterations (OWASP recommended minimum)
+    key = hashlib.pbkdf2_hmac(
+        'sha256',
+        credential.encode('utf-8'),
+        salt,
+        iterations=100000
+    )
+
+    return f"{salt.hex()}:{key.hex()}"
 
 
 class SettingsView(ctk.CTkFrame):
@@ -667,7 +690,9 @@ class SettingsView(ctk.CTkFrame):
             "Are you sure you want to change the manager password?\n\n"
             "This will affect access to manager mode on the web interface."
         ):
-            self.db.set_setting('manager_password', new_password)
+            # Hash the password before storing
+            hashed_password = _hash_credential(new_password)
+            self.db.set_setting('manager_password', hashed_password)
             self.manager_password_var.set('')
             self.password_status_label.configure(text='Current status: Set')
             messagebox.showinfo("Success", "Manager password has been changed successfully")
@@ -690,7 +715,9 @@ class SettingsView(ctk.CTkFrame):
             "Are you sure you want to change the payment portal PIN?\n\n"
             "This will affect access to the payment admin portal on the web interface."
         ):
-            self.db.set_setting('payment_portal_pin', new_pin)
+            # Hash the PIN before storing
+            hashed_pin = _hash_credential(new_pin)
+            self.db.set_setting('payment_portal_pin', hashed_pin)
             self.payment_pin_var.set('')
             self.pin_status_label.configure(text='Current status: Set')
             messagebox.showinfo("Success", "Payment portal PIN has been changed successfully")
