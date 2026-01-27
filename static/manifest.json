@@ -1,0 +1,20 @@
+{
+  "name": "EcoPOOL League Manager",
+  "short_name": "EcoPOOL",
+  "description": "WVU EcoCAR Pool League - Live Scores & Management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#001a3a",
+  "theme_color": "#002855",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/static/images/logo.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["sports", "entertainment"],
+  "lang": "en-US"
+}

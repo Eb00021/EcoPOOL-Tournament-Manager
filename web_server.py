@@ -308,6 +308,44 @@ class LiveScoreServer:
                 return send_file(logo_path, mimetype='image/png')
             abort(404)
 
+        @self.app.route('/sw.js')
+        def service_worker():
+            """Serve service worker from static folder (required at root for scope)."""
+            sw_path = os.path.join(os.path.dirname(__file__), "static", "sw.js")
+            if os.path.exists(sw_path):
+                response = send_file(sw_path, mimetype='application/javascript')
+                # Service workers need to be served fresh
+                response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                response.headers['Service-Worker-Allowed'] = '/'
+                return response
+            abort(404)
+
+        @self.app.route('/manifest.json')
+        def manifest():
+            """Serve PWA manifest from static folder."""
+            manifest_path = os.path.join(os.path.dirname(__file__), "static", "manifest.json")
+            if os.path.exists(manifest_path):
+                return send_file(manifest_path, mimetype='application/manifest+json')
+            abort(404)
+
+        @self.app.route('/api/match/<int:match_id>/timeline')
+        def get_match_timeline(match_id):
+            """Get timeline events for a match."""
+            try:
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'error': 'Database connection failed'}), 500
+
+                game_number = request.args.get('game', type=int)
+                events = db.get_match_timeline(match_id, game_number)
+
+                return jsonify({
+                    'match_id': match_id,
+                    'events': events
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/stream')
         def stream_overlay():
             """Streaming overlay view for OBS/Streamlabs.
@@ -827,33 +865,56 @@ class LiveScoreServer:
                     ''', (team1_score, team2_score, json.dumps(balls), current_game['id']))
                 conn.commit()
                 
+                # Log timeline events for ball pocketed
+                if team in [1, 2]:
+                    db.log_match_event(
+                        match_id, game_number, 'ball_pocketed',
+                        {'ball': ball_number, 'score': team1_score if team == 1 else team2_score},
+                        team
+                    )
+
+                # Log group assignment event
+                if group_changed:
+                    db.log_match_event(
+                        match_id, game_number, 'group_assigned',
+                        {'team1_group': team1_group, 'trigger_ball': ball_number},
+                        breaking_team
+                    )
+
                 # Handle illegal 8-ball - end the game with the other team winning
                 if illegal_8ball:
                     winning_team = 2 if illegal_8ball_losing_team == 1 else 1
                     cursor.execute('''
-                        UPDATE games 
+                        UPDATE games
                         SET early_8ball_team = ?, winner_team = ?
                         WHERE id = ?
                     ''', (illegal_8ball_losing_team, winning_team, current_game['id']))
                     conn.commit()
-                    
+
+                    # Log early 8-ball event
+                    db.log_match_event(
+                        match_id, game_number, 'early_8ball',
+                        {'losing_team': illegal_8ball_losing_team, 'on_break': early_8ball_on_break},
+                        winning_team
+                    )
+
                     # Check if match is complete
                     games = db.get_games_for_match(match_id)
                     match = db.get_match(match_id)
                     best_of = match.get('best_of', 3)
                     team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
                     team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
-                    
+
                     if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
                         cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                         conn.commit()
-                    
+
                     # Notify update
                     self.notify_update()
-                    
+
                     return jsonify({
-                        'success': True, 
-                        'team1_score': team1_score, 
+                        'success': True,
+                        'team1_score': team1_score,
                         'team2_score': team2_score,
                         'team1_group': team1_group,
                         'group_changed': group_changed,
@@ -862,13 +923,13 @@ class LiveScoreServer:
                         'losing_team': illegal_8ball_losing_team,
                         'winning_team': winning_team
                     })
-                
+
                 # Notify update
                 self.notify_update()
-                
+
                 return jsonify({
-                    'success': True, 
-                    'team1_score': team1_score, 
+                    'success': True,
+                    'team1_score': team1_score,
                     'team2_score': team2_score,
                     'team1_group': team1_group,
                     'group_changed': group_changed
@@ -1010,6 +1071,19 @@ class LiveScoreServer:
                     cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                     conn.commit()
                     match_complete = True
+
+                # Log game win event
+                db.log_match_event(
+                    match_id, game_number, 'game_win',
+                    {
+                        'team1_score': team1_score,
+                        'team2_score': team2_score,
+                        'match_complete': match_complete,
+                        'team1_wins': team1_wins,
+                        'team2_wins': team2_wins
+                    },
+                    winning_team
+                )
 
                 # Notify update
                 self.notify_update()
@@ -1273,9 +1347,18 @@ class LiveScoreServer:
                 team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
                 team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
                 
+                match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
                     cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                     conn.commit()
+                    match_complete = True
+
+                # Log golden break event
+                db.log_match_event(
+                    match_id, game_number, 'golden_break',
+                    {'match_complete': match_complete, 'team1_wins': team1_wins, 'team2_wins': team2_wins},
+                    winning_team
+                )
 
                 # Notify update
                 self.notify_update()
@@ -1335,19 +1418,28 @@ class LiveScoreServer:
                 team1_wins = sum(1 for g in games if g.get('winner_team') == 1)
                 team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
                 
+                match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
                     cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
                     conn.commit()
-                
+                    match_complete = True
+
+                # Log early 8-ball event
+                db.log_match_event(
+                    match_id, game_number, 'early_8ball',
+                    {'losing_team': losing_team, 'match_complete': match_complete},
+                    winning_team
+                )
+
                 # Notify update
                 self.notify_update()
-                
+
                 return jsonify({'success': True, 'winning_team': winning_team})
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)}), 500
-        
+
         @self.app.route('/api/manager/reset-table', methods=['POST'])
         def reset_table():
             """Reset the table (clear all balls and scores) for a game."""
@@ -2394,6 +2486,12 @@ class LiveScoreServer:
                     'balls_pocketed': balls
                 })
             
+            # Get timeline events for live/recent matches
+            timeline = []
+            if not match.get('is_complete', False):
+                # For live matches, include timeline
+                timeline = db.get_match_timeline(match_id)
+
             return {
                 'id': match_id,
                 'team1': team1 or 'TBD',
@@ -2405,7 +2503,8 @@ class LiveScoreServer:
                 'is_complete': match.get('is_complete', False),
                 'table': match.get('table_number') or 0,
                 'games': games_data,
-                'team1_group': current_game_group  # Current/last game's group assignment
+                'team1_group': current_game_group,  # Current/last game's group assignment
+                'timeline': timeline
             }
         except Exception as e:
             return {'error': str(e)}

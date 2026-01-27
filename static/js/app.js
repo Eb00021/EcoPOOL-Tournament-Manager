@@ -156,6 +156,8 @@
         let openScorecardIsManager = false;
         let lastQueuePanelHash = null;  // Track queue panel state to avoid unnecessary redraws (null = first load)
         let lastMainUIHash = null;  // Track main UI state to avoid flickering
+        let isOffline = !navigator.onLine;  // Track offline state
+        let offlineDBReady = false;  // Track if IndexedDB is ready
 
         const BALL_COLORS = {
             1: 'solid-1', 2: 'solid-2', 3: 'solid-3', 4: 'solid-4',
@@ -346,7 +348,21 @@
         
         function updateUI(data) {
             document.getElementById('update-time').textContent = data.timestamp;
-            
+
+            // Cache data to IndexedDB for offline use (only if not cached data)
+            if (!data._cached && offlineDBReady) {
+                saveToOfflineCache(data);
+            }
+
+            // Show cache indicator if using cached data
+            const updateTimeEl = document.getElementById('update-time');
+            if (data._cached) {
+                updateTimeEl.textContent = data.timestamp + ' (cached)';
+                updateTimeEl.style.color = '#ff9800';
+            } else {
+                updateTimeEl.style.color = '';
+            }
+
             // Create a hash of the data (excluding timestamp) to detect actual changes
             const dataHash = JSON.stringify({
                 tables: data.tables?.map(t => ({id: t.match_id, s: t.status, t1g: t.team1_games, t2g: t.team2_games, t1p: t.team1_points, t2p: t.team2_points})),
@@ -357,7 +373,7 @@
                 leaderboard: data.leaderboard?.slice(0, 5).map(l => l.points),  // Just check top 5 for changes
                 managerMode: managerMode
             });
-            
+
             // Skip full redraw if nothing changed
             if (dataHash === lastMainUIHash) {
                 return;
@@ -766,6 +782,96 @@
             }
         }
         
+        // Timeline event icons and formatting
+        const TIMELINE_ICONS = {
+            'ball_pocketed': '🎱',
+            'game_win': '🏆',
+            'golden_break': '⭐',
+            'early_8ball': '❌',
+            'group_assigned': '🎯'
+        };
+
+        function renderTimeline(events, matchData) {
+            if (!events || events.length === 0) {
+                return '<div class="timeline-empty">No events recorded yet</div>';
+            }
+
+            // Group events by game number
+            const eventsByGame = {};
+            events.forEach(e => {
+                const gameNum = e.game_number;
+                if (!eventsByGame[gameNum]) {
+                    eventsByGame[gameNum] = [];
+                }
+                eventsByGame[gameNum].push(e);
+            });
+
+            let html = '<div class="timeline-container">';
+            html += '<div class="timeline-header">📋 Match Timeline</div>';
+
+            Object.keys(eventsByGame).sort((a, b) => a - b).forEach(gameNum => {
+                const gameEvents = eventsByGame[gameNum];
+                html += `<div class="timeline-game-section">`;
+                html += `<div class="timeline-game-header">Game ${gameNum}</div>`;
+
+                gameEvents.forEach(event => {
+                    const icon = TIMELINE_ICONS[event.event_type] || '📌';
+                    const teamClass = event.team === 1 ? 'team1' : event.team === 2 ? 'team2' : '';
+                    const time = formatTimelineTime(event.timestamp);
+                    const description = formatTimelineEvent(event, matchData);
+
+                    html += `
+                        <div class="timeline-event ${teamClass}">
+                            <span class="timeline-icon">${icon}</span>
+                            <div class="timeline-content">
+                                <span class="timeline-desc">${description}</span>
+                                <span class="timeline-time">${time}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+            });
+
+            html += '</div>';
+            return html;
+        }
+
+        function formatTimelineTime(timestamp) {
+            if (!timestamp) return '';
+            try {
+                const date = new Date(timestamp.replace(' ', 'T'));
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (e) {
+                return timestamp.split(' ')[1] || timestamp;
+            }
+        }
+
+        function formatTimelineEvent(event, matchData) {
+            const team1Name = matchData?.team1 || 'Team 1';
+            const team2Name = matchData?.team2 || 'Team 2';
+            const teamName = event.team === 1 ? team1Name : event.team === 2 ? team2Name : '';
+            const data = event.event_data || {};
+
+            switch (event.event_type) {
+                case 'ball_pocketed':
+                    return `${teamName} pocketed ball ${data.ball || '?'}`;
+                case 'game_win':
+                    return `${teamName} wins game! (${data.team1_wins || 0}-${data.team2_wins || 0})`;
+                case 'golden_break':
+                    return `${teamName} gets a GOLDEN BREAK!`;
+                case 'early_8ball':
+                    const loser = data.losing_team === 1 ? team1Name : team2Name;
+                    return `${loser} early 8-ball - ${teamName} wins`;
+                case 'group_assigned':
+                    const group = data.team1_group === 'solids' ? 'Solids' : 'Stripes';
+                    return `Groups assigned - ${team1Name}: ${group}`;
+                default:
+                    return event.event_type.replace(/_/g, ' ');
+            }
+        }
+
         function renderScorecard(match, gamesData = null, isManagerMode = false) {
             const statusText = match.is_complete ? 'Complete' : 'In Progress';
             
@@ -842,12 +948,17 @@
                 gamesHtml = '<div class="empty-state" style="padding:15px">No games recorded yet</div>';
             }
             
+            // Render timeline if available (for live matches)
+            const timelineHtml = !match.is_complete && match.timeline && match.timeline.length > 0
+                ? renderTimeline(match.timeline, match)
+                : '';
+
             return `
                 <div class="modal-header">
                     <h2>${match.is_finals ? '🏆 Finals' : 'Match'}</h2>
                     <div class="table-info">Table ${match.table} • ${statusText}</div>
                 </div>
-                
+
                 <div class="scorecard-teams">
                     <div class="scorecard-team">
                         <div class="scorecard-team-name">
@@ -865,12 +976,14 @@
                         <div class="scorecard-team-score">${match.team2_games}</div>
                     </div>
                 </div>
-                
+
                 <div style="margin-bottom:10px;color:var(--text-secondary);font-size:0.85em;text-align:center">
                     Best of ${match.best_of}
                 </div>
-                
+
                 ${gamesHtml}
+
+                ${timelineHtml}
             `;
         }
         
@@ -1458,6 +1571,211 @@
             return div.innerHTML;
         }
         
+        // ========================================
+        // OFFLINE MODE SUPPORT
+        // ========================================
+
+        // Initialize offline database
+        async function initOfflineSupport() {
+            if (window.offlineDB) {
+                offlineDBReady = await window.offlineDB.init();
+                if (offlineDBReady) {
+                    console.log('[Offline] IndexedDB initialized');
+                }
+            }
+
+            // Start sync manager
+            if (window.syncManager) {
+                window.syncManager.start();
+                window.syncManager.addListener(handleSyncEvent);
+            }
+        }
+
+        // Handle sync events
+        function handleSyncEvent(event, data) {
+            switch (event) {
+                case 'syncStart':
+                    console.log('[Offline] Sync started');
+                    break;
+                case 'syncComplete':
+                    console.log(`[Offline] Sync complete: ${data.synced} synced`);
+                    updateSyncPendingUI();
+                    if (data.synced > 0) {
+                        showToast(`Synced ${data.synced} action(s)`);
+                    }
+                    break;
+                case 'conflict':
+                    console.warn('[Offline] Sync conflict:', data);
+                    showToast(`Action rejected: ${data.error}`, true);
+                    break;
+                case 'itemSynced':
+                    updateSyncPendingUI();
+                    break;
+            }
+        }
+
+        // Update offline indicator UI
+        function updateOfflineIndicator() {
+            const indicator = document.getElementById('offline-indicator');
+            if (!indicator) return;
+
+            if (isOffline) {
+                indicator.style.display = 'flex';
+            } else {
+                indicator.style.display = 'none';
+            }
+
+            updateSyncPendingUI();
+        }
+
+        // Update sync pending count UI
+        async function updateSyncPendingUI() {
+            const badge = document.getElementById('sync-pending-count');
+            if (!badge) return;
+
+            if (window.syncManager) {
+                const count = await window.syncManager.getPendingCount();
+                if (count > 0) {
+                    badge.textContent = count;
+                    badge.style.display = 'inline';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+        }
+
+        // Handle going offline
+        function handleOffline() {
+            isOffline = true;
+            console.log('[Offline] App is now offline');
+            updateOfflineIndicator();
+            loadFromOfflineCache();
+        }
+
+        // Handle coming online
+        function handleOnline() {
+            isOffline = false;
+            console.log('[Offline] App is now online');
+            updateOfflineIndicator();
+            // SSE will reconnect automatically
+        }
+
+        // Load data from offline cache
+        async function loadFromOfflineCache() {
+            if (!offlineDBReady || !window.offlineDB) return;
+
+            const cachedData = await window.offlineDB.getAppState();
+            if (cachedData) {
+                console.log('[Offline] Loading from cache');
+                // Mark data as cached
+                cachedData._cached = true;
+                updateUI(cachedData);
+            }
+        }
+
+        // Save data to offline cache
+        async function saveToOfflineCache(data) {
+            if (!offlineDBReady || !window.offlineDB) return;
+            await window.offlineDB.saveAppState(data);
+        }
+
+        // Execute manager action with offline support
+        async function executeManagerAction(action, payload) {
+            // Add session token to payload
+            payload.session_token = sessionStorage.getItem('manager_session_token');
+
+            if (isOffline) {
+                // Queue for later sync
+                if (window.offlineDB && offlineDBReady) {
+                    await window.offlineDB.addToSyncQueue(action, payload);
+                    updateSyncPendingUI();
+                    showToast('Action queued for sync', false, 'queued');
+                    return { success: true, queued: true };
+                } else {
+                    showToast('Cannot perform action offline', true);
+                    return { success: false, error: 'Offline' };
+                }
+            }
+
+            // Online - execute immediately
+            const actionMap = {
+                'pocket_ball': '/api/manager/pocket-ball',
+                'win_game': '/api/manager/win-game',
+                'set_group': '/api/manager/set-group',
+                'set_breaking_team': '/api/manager/set-breaking-team',
+                'set_golden_break': '/api/manager/set-golden-break',
+                'set_early_8ball': '/api/manager/set-early-8ball',
+                'reset_table': '/api/manager/reset-table',
+                'start_match': '/api/manager/start-match',
+                'complete_match': '/api/manager/complete-match'
+            };
+
+            const endpoint = actionMap[action];
+            if (!endpoint) {
+                return { success: false, error: 'Unknown action' };
+            }
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                return await response.json();
+            } catch (error) {
+                console.error('[Offline] Action failed:', error);
+                // Queue for retry if network error
+                if (window.offlineDB && offlineDBReady) {
+                    await window.offlineDB.addToSyncQueue(action, payload);
+                    updateSyncPendingUI();
+                    showToast('Action queued for sync', false, 'queued');
+                    return { success: true, queued: true };
+                }
+                return { success: false, error: error.message };
+            }
+        }
+
+        // Show toast notification
+        function showToast(message, isError = false, type = '') {
+            // Remove existing toast
+            const existing = document.querySelector('.toast-notification');
+            if (existing) existing.remove();
+
+            const toast = document.createElement('div');
+            toast.className = `toast-notification ${isError ? 'error-toast' : ''} ${type === 'queued' ? 'queued-toast' : ''}`;
+            toast.textContent = message;
+            toast.style.cssText = `
+                position: fixed;
+                top: 60px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: ${isError ? '#f44336' : '#4CAF50'};
+                color: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-size: 0.9em;
+                font-weight: 500;
+                z-index: 10001;
+                animation: slideDown 0.3s ease-out;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            `;
+
+            document.body.appendChild(toast);
+
+            // Remove after 3 seconds
+            setTimeout(() => {
+                toast.style.animation = 'slideUp 0.3s ease-out forwards';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Listen for online/offline events
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+
+        // Initialize offline support
+        initOfflineSupport();
+
         // Start connection when page loads
         connectSSE();
 

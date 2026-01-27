@@ -347,6 +347,27 @@ class DatabaseManager:
             )
         ''')
 
+        # Match events table - tracks timeline events during matches
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS match_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id INTEGER NOT NULL,
+                game_number INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                event_data TEXT DEFAULT '{}',
+                team INTEGER,
+                timestamp TEXT NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                FOREIGN KEY (match_id) REFERENCES matches(id)
+            )
+        ''')
+
+        # Index for efficient timeline queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_match_events_match_game
+            ON match_events(match_id, game_number, timestamp_ms)
+        ''')
+
 
         conn.commit()
     
@@ -1524,11 +1545,102 @@ class DatabaseManager:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT COUNT(*) as live_count
-            FROM matches 
+            FROM matches
             WHERE league_night_id = ? AND round_number = ? AND status = 'live'
         ''', (league_night_id, round_number))
         row = cursor.fetchone()
         return row['live_count'] > 0
+
+    # ============ Match Event/Timeline Operations ============
+
+    def log_match_event(self, match_id: int, game_number: int, event_type: str,
+                        event_data: dict = None, team: int = None) -> int:
+        """Log an event to the match timeline.
+
+        Args:
+            match_id: The match ID
+            game_number: The game number within the match
+            event_type: Type of event (ball_pocketed, game_win, golden_break, etc.)
+            event_data: Additional event details as a dict
+            team: Team number (1, 2, or None)
+
+        Returns:
+            The event ID
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp_ms = int(datetime.now().timestamp() * 1000)
+        event_data_json = json.dumps(event_data or {})
+
+        cursor.execute('''
+            INSERT INTO match_events (match_id, game_number, event_type, event_data, team, timestamp, timestamp_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (match_id, game_number, event_type, event_data_json, team, timestamp, timestamp_ms))
+        conn.commit()
+        return cursor.lastrowid
+
+    def get_match_timeline(self, match_id: int, game_number: int = None) -> list[dict]:
+        """Get timeline events for a match.
+
+        Args:
+            match_id: The match ID
+            game_number: Optional - filter to specific game number
+
+        Returns:
+            List of event dicts sorted by timestamp
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        if game_number is not None:
+            cursor.execute('''
+                SELECT * FROM match_events
+                WHERE match_id = ? AND game_number = ?
+                ORDER BY timestamp_ms ASC
+            ''', (match_id, game_number))
+        else:
+            cursor.execute('''
+                SELECT * FROM match_events
+                WHERE match_id = ?
+                ORDER BY game_number ASC, timestamp_ms ASC
+            ''', (match_id,))
+
+        events = []
+        for row in cursor.fetchall():
+            event = dict(row)
+            # Parse event_data JSON
+            try:
+                event['event_data'] = json.loads(event['event_data'] or '{}')
+            except (json.JSONDecodeError, TypeError):
+                event['event_data'] = {}
+            events.append(event)
+
+        return events
+
+    def clear_match_events(self, match_id: int, game_number: int = None):
+        """Clear timeline events for a match or specific game.
+
+        Args:
+            match_id: The match ID
+            game_number: Optional - only clear events for this game
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        if game_number is not None:
+            cursor.execute('''
+                DELETE FROM match_events
+                WHERE match_id = ? AND game_number = ?
+            ''', (match_id, game_number))
+        else:
+            cursor.execute('''
+                DELETE FROM match_events
+                WHERE match_id = ?
+            ''', (match_id,))
+
+        conn.commit()
     
     def get_queued_matches_in_current_round_only(self, league_night_id: int) -> list[dict]:
         """Get queued matches ONLY from the current round, not future rounds."""

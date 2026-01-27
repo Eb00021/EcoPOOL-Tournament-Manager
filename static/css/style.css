@@ -2585,4 +2585,209 @@
                 animation: floatUpEnhanced 3s ease-out forwards;
             }
         }
-    
+
+        /* ==========================================
+           OFFLINE MODE INDICATOR STYLES
+           ========================================== */
+
+        .offline-indicator {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: linear-gradient(135deg, #ff9800, #e65100);
+            color: white;
+            padding: 8px 14px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(255, 152, 0, 0.4);
+            animation: offlinePulse 2s ease-in-out infinite;
+        }
+
+        @keyframes offlinePulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .offline-icon {
+            font-size: 1em;
+        }
+
+        .offline-text {
+            white-space: nowrap;
+        }
+
+        .sync-pending-badge {
+            background: white;
+            color: #e65100;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 0.75em;
+            font-weight: bold;
+            min-width: 16px;
+            text-align: center;
+        }
+
+        /* Sync pending indicator on elements */
+        .sync-pending {
+            position: relative;
+        }
+
+        .sync-pending::after {
+            content: '⏳';
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            font-size: 0.75em;
+            background: #ff9800;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: syncPendingBounce 1s ease-in-out infinite;
+        }
+
+        @keyframes syncPendingBounce {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+
+        /* Toast notification for queued actions */
+        .queued-toast {
+            background: linear-gradient(135deg, #ff9800, #e65100) !important;
+        }
+
+        .queued-toast::before {
+            content: '⏳ ';
+        }
+
+        /* Mobile adjustments for offline indicator */
+        @media (max-width: 480px) {
+            .offline-indicator {
+                top: auto;
+                bottom: 140px;
+                right: 10px;
+                padding: 6px 10px;
+                font-size: 0.8em;
+            }
+        }
+
+        /* ==========================================
+           MATCH TIMELINE STYLES
+           ========================================== */
+
+        .timeline-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .timeline-header {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .timeline-empty {
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+        }
+
+        .timeline-game-section {
+            margin-bottom: 15px;
+        }
+
+        .timeline-game-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .timeline-game-header {
+            font-size: 0.9em;
+            font-weight: 600;
+            color: var(--gold);
+            margin-bottom: 8px;
+            padding: 4px 8px;
+            background: rgba(255, 215, 0, 0.1);
+            border-radius: 6px;
+            display: inline-block;
+        }
+
+        .timeline-event {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 8px 10px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 3px solid transparent;
+            transition: background 0.2s;
+        }
+
+        .timeline-event:hover {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .timeline-event.team1 {
+            border-left-color: var(--green);
+        }
+
+        .timeline-event.team2 {
+            border-left-color: var(--blue);
+        }
+
+        .timeline-icon {
+            font-size: 1.1em;
+            flex-shrink: 0;
+            width: 24px;
+            text-align: center;
+        }
+
+        .timeline-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .timeline-desc {
+            color: var(--text-primary);
+            font-size: 0.9em;
+        }
+
+        .timeline-time {
+            color: var(--text-secondary);
+            font-size: 0.75em;
+        }
+
+        /* Mobile adjustments for timeline */
+        @media (max-width: 480px) {
+            .timeline-container {
+                padding: 12px;
+                margin-top: 15px;
+            }
+
+            .timeline-event {
+                padding: 6px 8px;
+            }
+
+            .timeline-icon {
+                font-size: 1em;
+            }
+
+            .timeline-desc {
+                font-size: 0.85em;
+            }
+        }

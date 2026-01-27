@@ -104,6 +104,26 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Favicon support**: Custom icon displayed in browser tabs and bookmarks
 - Start/stop from the sidebar; share the URL or QR with spectators
 
+### 📲 Progressive Web App (PWA)
+- **Installable**: Add to home screen on mobile devices for app-like experience
+- **Service Worker**: Caches static assets for faster loading
+- **Manifest**: Custom app name, icons, and theme colors
+- **Works offline**: Previously loaded content available without network
+
+### 📴 Offline Mode
+- **IndexedDB Storage**: Caches app state for offline viewing
+- **Sync Queue**: Manager actions queued when offline, synced when back online
+- **Visual Indicator**: Orange badge shows offline status and pending sync count
+- **Graceful Degradation**: Falls back to cached data when network unavailable
+- **Background Sync**: Automatically processes queued actions when connection restored
+
+### 📋 Match Timeline
+- **Event Logging**: Records all match events (ball pocketed, game wins, golden breaks, early 8-balls)
+- **Visual Timeline**: Chronological view of events in scorecard modal
+- **Team Colors**: Events color-coded by team
+- **Timestamps**: Shows when each event occurred
+- **Game Grouping**: Events organized by game number
+
 ### 🌐 Ngrok Public Access
 - **Static domain support**: Use a free ngrok static domain to completely eliminate browser warnings
 - **Auth token integration**: Configure your ngrok auth token for extended sessions
@@ -234,9 +254,14 @@ EcoPOOL Toolkit/
 │   ├── css/
 │   │   ├── style.css       # Main styles
 │   │   └── stream.css      # Stream overlay styles
-│   ├── js/app.js           # JavaScript
+│   ├── js/
+│   │   ├── app.js          # Main JavaScript
+│   │   ├── offline-db.js   # IndexedDB offline storage
+│   │   └── sync-manager.js # Background sync manager
 │   ├── fonts/              # Web fonts
-│   └── images/             # Logo and images
+│   ├── images/             # Logo and images
+│   ├── manifest.json       # PWA manifest
+│   └── sw.js               # Service worker
 ├── icon.ico                # Application icon (desktop & favicon)
 ├── views/
 │   ├── players_view.py
@@ -279,6 +304,7 @@ SQLite (`ecopool_league.db`) is created on first run. Main tables:
 - **players** — Names, email, Venmo, profile picture, stats derived from games
 - **matches** — Pairings, table, best-of, finals flag, queue/round/status for scheduling
 - **games** — Per-game scores, ball states, golden break, early 8-ball
+- **match_events** — Timeline events (ball pocketed, game wins, golden breaks, etc.)
 - **seasons** — Season name and dates
 - **league_nights** — Date, location, table count, buy-in, optional season
 - **league_night_pairs** — Fixed pairs for a league night
