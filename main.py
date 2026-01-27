@@ -80,7 +80,15 @@ class EcoPoolApp(ctk.CTk):
         self.title("EcoPOOL League Manager")
         self.geometry("1400x900")
         self.minsize(1200, 700)
-        
+
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass  # Icon setting may fail on some platforms
+
         # Initialize database
         self.db = DatabaseManager()
         self.exporter = Exporter(self.db)
@@ -667,10 +675,21 @@ class EcoPoolApp(ctk.CTk):
                     hover_color="#a43526"
                 )
                 self.qr_code_btn.configure(state="normal")
-                self.web_server_status.configure(
-                    text=result,
-                    text_color="#4CAF50"
-                )
+
+                # Check if this is a public ngrok URL
+                is_public = "ngrok" in result
+
+                if is_public:
+                    self.web_server_status.configure(
+                        text=f"Public: {result}",
+                        text_color="#FFA500"  # Orange for public
+                    )
+                else:
+                    self.web_server_status.configure(
+                        text=result,
+                        text_color="#4CAF50"
+                    )
+
                 # Show QR code popup automatically
                 self.show_qr_code()
             else:
@@ -681,9 +700,10 @@ class EcoPoolApp(ctk.CTk):
         if not hasattr(self, '_current_server_url') or not self._current_server_url:
             messagebox.showwarning("Server Not Running", "Start the server first to generate a QR code.")
             return
-        
+
         url = self._current_server_url
-        
+        is_public = "ngrok" in url
+
         # Check if QR code library is available
         if not QR_AVAILABLE:
             messagebox.showinfo(
@@ -693,7 +713,7 @@ class EcoPoolApp(ctk.CTk):
                 f"For now, manually enter this URL:\n{url}"
             )
             return
-        
+
         # Create QR code
         qr = qrcode.QRCode(
             version=1,
@@ -703,50 +723,60 @@ class EcoPoolApp(ctk.CTk):
         )
         qr.add_data(url)
         qr.make(fit=True)
-        
+
         # Create image (CTkImage will handle resizing)
         qr_image = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-        
-        # Create popup window
+
+        # Create popup window - taller for public URLs to fit note
+        popup_height = 580 if is_public else 520
         popup = ctk.CTkToplevel(self)
         popup.title("Scan to Open Live Scores")
-        popup.geometry("380x520")
+        popup.geometry(f"380x{popup_height}")
         popup.resizable(False, False)
         popup.transient(self)
         popup.grab_set()
-        
+
         # Center the popup
         popup.update_idletasks()
         x = self.winfo_x() + (self.winfo_width() // 2) - 190
-        y = self.winfo_y() + (self.winfo_height() // 2) - 260
+        y = self.winfo_y() + (self.winfo_height() // 2) - (popup_height // 2)
         popup.geometry(f"+{x}+{y}")
-        
-        # Header
+
+        # Header - different styling for public vs local
+        if is_public:
+            header_text = "Public QR Code"
+            header_color = "#FFA500"  # Orange for public
+            subtitle = "Anyone with this link can view scores from anywhere"
+        else:
+            header_text = "Scan QR Code"
+            header_color = "#4CAF50"  # Green for local
+            subtitle = "Open your phone camera and point at the code"
+
         ctk.CTkLabel(
             popup,
-            text="Scan QR Code",
+            text=header_text,
             font=get_font(22, "bold"),
-            text_color="#4CAF50"
+            text_color=header_color
         ).pack(pady=(20, 5))
-        
+
         ctk.CTkLabel(
             popup,
-            text="Open your phone camera and point at the code",
+            text=subtitle,
             font=get_font(12),
             text_color="#888888"
         ).pack(pady=(0, 15))
-        
+
         # QR Code frame
         qr_frame = ctk.CTkFrame(popup, fg_color="white", corner_radius=10)
         qr_frame.pack(padx=30, pady=10)
-        
+
         # Convert PIL image to CTkImage for proper HighDPI support
         ctk_image = ctk.CTkImage(light_image=qr_image, dark_image=qr_image, size=(280, 280))
-        
+
         qr_label = ctk.CTkLabel(qr_frame, image=ctk_image, text="")
         qr_label.image = ctk_image  # Keep reference
         qr_label.pack(padx=10, pady=10)
-        
+
         # URL display
         ctk.CTkLabel(
             popup,
@@ -754,19 +784,28 @@ class EcoPoolApp(ctk.CTk):
             font=get_font(11),
             text_color="#888888"
         ).pack(pady=(15, 5))
-        
+
         url_frame = ctk.CTkFrame(popup, fg_color="#252540", corner_radius=8)
         url_frame.pack(padx=20, fill="x")
-        
+
         url_label = ctk.CTkLabel(
             url_frame,
             text=url,
             font=get_font(14, "bold"),
-            text_color="#4CAF50",
+            text_color=header_color,
             cursor="hand2"
         )
         url_label.pack(pady=10)
         url_label.bind("<Button-1>", lambda e: webbrowser.open(url))
+
+        # Note for public URLs
+        if is_public:
+            ctk.CTkLabel(
+                popup,
+                text="Note: Free ngrok URLs expire after ~2 hours.\nAdd an auth token in Settings for longer sessions.",
+                font=get_font(10),
+                text_color="#666666"
+            ).pack(pady=(10, 0))
         
         # Close button
         ctk.CTkButton(

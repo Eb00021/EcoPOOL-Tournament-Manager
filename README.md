@@ -101,8 +101,35 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Profile pictures**: Player avatars displayed throughout the interface
 - **Connection status**: Real-time connection indicator with auto-reconnect
 - **Spectator Reactions**: Real-time emoji reactions from viewers (🎯 Nice shot!, 🔥 Great game!, 👏 GG!, etc.)
-- **Ngrok warning bypass**: Browser warning automatically disabled for seamless access
+- **Favicon support**: Custom icon displayed in browser tabs and bookmarks
 - Start/stop from the sidebar; share the URL or QR with spectators
+
+### 🌐 Ngrok Public Access
+- **Static domain support**: Use a free ngrok static domain to completely eliminate browser warnings
+- **Auth token integration**: Configure your ngrok auth token for extended sessions
+- **Automatic URL handling**: Cleans up domain format (removes https://, trailing slashes)
+- **Graceful cleanup**: Proper shutdown handlers ensure tunnels are closed cleanly
+- Configure in Settings → Ngrok Settings
+
+### 📺 Streaming Integration (OBS/Streamlabs)
+- **Dedicated stream overlay** at `/stream` or `/broadcast`
+- **OBS Browser Source compatible**: Add as a browser source in OBS/Streamlabs
+- **Multiple display modes**:
+  - `?mode=all` — Show tables, leaderboard, and queue
+  - `?mode=tables` — Tables only
+  - `?mode=leaderboard` — Leaderboard only
+  - `?mode=queue` — Queue only
+- **Customization options**:
+  - `?transparent=true` — Transparent background for overlays
+  - `?header=false` — Hide the header
+  - `?compact=true` — Compact layout
+  - `?players=10` — Max leaderboard entries
+  - `?tables=8` — Max tables to show
+  - `?refresh=3000` — Refresh rate in ms
+  - `?bg=000000` — Background color (hex)
+  - `?fontsize=16` — Base font size
+- **Responsive design**: Adapts to common stream resolutions (1080p, 720p, 480p)
+- Access via Manager Mode → Stream View button
 
 ### 📲 Manager Mode (Mobile Scoring)
 - **Password-protected** mobile interface for league managers
@@ -200,13 +227,17 @@ EcoPOOL Toolkit/
 ├── fonts/                  # Custom font files
 ├── templates/              # Web interface HTML templates
 │   ├── index.html          # Main live scores page
+│   ├── stream.html         # OBS/Streamlabs overlay view
 │   ├── payments_admin.html # Payment admin portal
 │   └── payments_login.html # Payment portal login
 ├── static/                 # Web interface assets
-│   ├── css/style.css       # Styles
+│   ├── css/
+│   │   ├── style.css       # Main styles
+│   │   └── stream.css      # Stream overlay styles
 │   ├── js/app.js           # JavaScript
 │   ├── fonts/              # Web fonts
 │   └── images/             # Logo and images
+├── icon.ico                # Application icon (desktop & favicon)
 ├── views/
 │   ├── players_view.py
 │   ├── match_generator_view.py
@@ -261,6 +292,7 @@ SQLite (`ecopool_league.db`) is created on first run. Main tables:
 - **openpyxl** — Excel export
 - **flask** — Live scores web server
 - **qrcode[pil]** — QR code for mobile access to live scores
+- **pyngrok** — Public URL tunneling for remote access
 
 ## Contributing
 

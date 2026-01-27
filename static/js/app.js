@@ -1495,6 +1495,9 @@
                 const btn = document.getElementById('manager-toggle');
                 btn.classList.remove('active');
                 btn.textContent = '🔧 Manager Mode';
+                // Hide stream link
+                const streamLink = document.getElementById('stream-link');
+                if (streamLink) streamLink.style.display = 'none';
                 // Refresh UI to remove manager panel
                 fetch('/api/scores')
                     .then(r => r.json())
@@ -1529,6 +1532,9 @@
                     const btn = document.getElementById('manager-toggle');
                     btn.classList.add('active');
                     btn.textContent = '🔧 Manager Mode (ON)';
+                    // Show stream link
+                    const streamLink = document.getElementById('stream-link');
+                    if (streamLink) streamLink.style.display = 'inline-flex';
                     // Refresh UI to show manager panel
                     fetch('/api/scores')
                         .then(r => r.json())

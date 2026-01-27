@@ -268,6 +268,139 @@ class SettingsView(ctk.CTkFrame):
         )
         self.pin_status_label.pack(anchor='w', pady=(5, 0))
 
+        # ========== Public Server (ngrok) Section ==========
+        self._create_section(content, 'Public Server (ngrok)')
+
+        ngrok_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
+        ngrok_card.pack(fill='x', pady=10)
+
+        ngrok_inner = ctk.CTkFrame(ngrok_card, fg_color='transparent')
+        ngrok_inner.pack(fill='x', padx=20, pady=15)
+
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Enable Public Access',
+            font=get_font(14, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Make the live scores server accessible from anywhere via ngrok',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        ngrok_toggle_row = ctk.CTkFrame(ngrok_inner, fg_color='transparent')
+        ngrok_toggle_row.pack(fill='x', pady=10)
+
+        ngrok_enabled = self.db.get_setting('ngrok_enabled', 'false') == 'true'
+        self.ngrok_enabled_var = ctk.BooleanVar(value=ngrok_enabled)
+
+        ctk.CTkLabel(
+            ngrok_toggle_row,
+            text='Enable public access via ngrok',
+            font=get_font(12)
+        ).pack(side='left')
+
+        ctk.CTkSwitch(
+            ngrok_toggle_row,
+            text='',
+            variable=self.ngrok_enabled_var,
+            command=self._save_ngrok_enabled,
+            fg_color='#333333',
+            progress_color='#4CAF50'
+        ).pack(side='right')
+
+        # Auth token field
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Auth Token (required for static domain)',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(15, 5))
+
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Get your free auth token at dashboard.ngrok.com',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        token_row = ctk.CTkFrame(ngrok_inner, fg_color='transparent')
+        token_row.pack(fill='x', pady=10)
+
+        saved_token = self.db.get_setting('ngrok_auth_token', '')
+        self.ngrok_token_var = ctk.StringVar(value=saved_token)
+
+        ctk.CTkEntry(
+            token_row,
+            textvariable=self.ngrok_token_var,
+            height=40,
+            width=280,
+            font=get_font(14),
+            placeholder_text='Enter ngrok auth token',
+            show='*'
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            token_row,
+            text='Save Token',
+            font=get_font(12),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=100,
+            command=self._save_ngrok_token
+        ).pack(side='left')
+
+        # Static domain field (eliminates browser warning)
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Static Domain (eliminates browser warning)',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(15, 5))
+
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Get one free static domain at dashboard.ngrok.com/domains',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        domain_row = ctk.CTkFrame(ngrok_inner, fg_color='transparent')
+        domain_row.pack(fill='x', pady=10)
+
+        saved_domain = self.db.get_setting('ngrok_static_domain', '')
+        self.ngrok_domain_var = ctk.StringVar(value=saved_domain)
+
+        ctk.CTkEntry(
+            domain_row,
+            textvariable=self.ngrok_domain_var,
+            height=40,
+            width=280,
+            font=get_font(14),
+            placeholder_text='yourname.ngrok-free.app'
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            domain_row,
+            text='Save Domain',
+            font=get_font(12),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=100,
+            command=self._save_ngrok_domain
+        ).pack(side='left')
+
+        # Info label
+        ctk.CTkLabel(
+            ngrok_inner,
+            text='Note: Using a static domain completely removes the ngrok\n'
+                 'browser warning. Auth token is required for static domains.',
+            font=get_font(10),
+            text_color='#666666'
+        ).pack(anchor='w', pady=(5, 0))
+
         # ========== Season Management Section ==========
         self._create_section(content, 'Season Management')
 
@@ -721,6 +854,51 @@ class SettingsView(ctk.CTkFrame):
             self.payment_pin_var.set('')
             self.pin_status_label.configure(text='Current status: Set')
             messagebox.showinfo("Success", "Payment portal PIN has been changed successfully")
+
+    def _save_ngrok_enabled(self):
+        """Save ngrok enabled setting."""
+        enabled = self.ngrok_enabled_var.get()
+        self.db.set_setting('ngrok_enabled', str(enabled).lower())
+
+    def _save_ngrok_token(self):
+        """Save ngrok auth token."""
+        token = self.ngrok_token_var.get().strip()
+        self.db.set_setting('ngrok_auth_token', token)
+        if token:
+            messagebox.showinfo("Saved", "Ngrok auth token saved")
+        else:
+            messagebox.showinfo("Cleared", "Ngrok auth token cleared")
+
+    def _save_ngrok_domain(self):
+        """Save ngrok static domain."""
+        domain = self.ngrok_domain_var.get().strip()
+        # Clean up domain format
+        if domain.startswith('https://'):
+            domain = domain[8:]
+        elif domain.startswith('http://'):
+            domain = domain[7:]
+        # Remove trailing slashes
+        domain = domain.rstrip('/')
+
+        self.db.set_setting('ngrok_static_domain', domain)
+        self.ngrok_domain_var.set(domain)
+
+        if domain:
+            if '.' not in domain:
+                messagebox.showwarning(
+                    "Warning",
+                    "Domain format looks invalid.\n"
+                    "Expected format: yourname.ngrok-free.app"
+                )
+            else:
+                messagebox.showinfo(
+                    "Saved",
+                    f"Static domain saved: {domain}\n\n"
+                    "Make sure you have also set your auth token.\n"
+                    "Restart the server for changes to take effect."
+                )
+        else:
+            messagebox.showinfo("Cleared", "Static domain cleared")
 
     def _create_backup(self):
         """Create a database backup."""

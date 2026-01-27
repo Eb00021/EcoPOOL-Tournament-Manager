@@ -1,0 +1,648 @@
+/**
+ * EcoPOOL Stream Overlay Styles
+ * Optimized for OBS Browser Source / Streamlabs
+ *
+ * Usage in OBS:
+ * URL: http://localhost:5000/stream
+ * URL params:
+ *   ?mode=all|tables|leaderboard|queue
+ *   ?transparent=true (for chroma key)
+ *   ?header=false (hide header)
+ *   ?players=10 (max leaderboard entries)
+ *   ?tables=6 (max tables to show)
+ *   ?refresh=3000 (refresh rate in ms)
+ *   ?compact=true (compact layout)
+ *   ?bg=000000 (background color hex)
+ *   ?fontsize=16 (base font size)
+ */
+
+:root {
+    --wvu-blue: #002855;
+    --wvu-gold: #EAAA00;
+    --bg-primary: #0d1117;
+    --bg-card: #161b22;
+    --bg-accent: #21262d;
+    --text-primary: #f0f6fc;
+    --text-secondary: #8b949e;
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --gold: #EAAA00;
+    --red: #f85149;
+    --felt-green: #0B6623;
+    --base-font-size: 16px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+@font-face {
+    font-family: 'Helvetica Neue';
+    src: url('/static/fonts/HelveticaNeueMedium.otf') format('opentype');
+    font-weight: 500;
+    font-style: normal;
+}
+
+html, body {
+    width: 100%;
+    min-height: 100%;
+}
+
+body {
+    font-family: 'Helvetica Neue', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: var(--base-font-size);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+body.transparent {
+    background: transparent;
+}
+
+.stream-container {
+    width: 100%;
+    min-height: 100vh;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* Header */
+.stream-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 15px 25px;
+    background: linear-gradient(135deg, var(--wvu-blue), #001a3a);
+    border-radius: 12px;
+    border: 2px solid var(--wvu-gold);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.stream-logo {
+    height: 50px;
+    width: auto;
+    max-width: 200px;
+    object-fit: contain;
+}
+
+.stream-title {
+    font-size: 1.8em;
+    font-weight: bold;
+    color: var(--text-primary);
+}
+
+.live-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 0, 0, 0.2);
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-weight: bold;
+    color: #ff4444;
+}
+
+.live-dot {
+    width: 10px;
+    height: 10px;
+    background: #ff4444;
+    border-radius: 50%;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+/* Content */
+#stream-content {
+    display: flex;
+    flex-direction: column;
+    gap: 25px;
+    flex: 1;
+}
+
+.loading-state, .empty-message {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-secondary);
+    font-size: 1.2em;
+}
+
+/* Section Titles */
+.section-title {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: var(--wvu-gold);
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--wvu-gold);
+}
+
+/* Tables Section */
+.tables-section {
+    flex-shrink: 0;
+}
+
+.tables-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.table-card {
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 12px;
+    border: 2px solid transparent;
+}
+
+.table-card.live {
+    border-color: var(--green);
+    background: linear-gradient(135deg, rgba(63, 185, 80, 0.15), var(--bg-card));
+}
+
+.table-card.available {
+    opacity: 0.5;
+    border-color: var(--bg-accent);
+}
+
+.table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.table-number {
+    font-weight: bold;
+    font-size: 1em;
+}
+
+.live-indicator-small {
+    background: var(--green);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 0.65em;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.table-felt {
+    background: var(--felt-green);
+    border-radius: 6px;
+    padding: 12px 8px;
+    text-align: center;
+    border: 3px solid #5D3A1A;
+    margin: 8px 0;
+}
+
+.table-score {
+    font-size: 1.8em;
+    font-weight: bold;
+    color: white;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+    line-height: 1;
+}
+
+.table-empty {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.9em;
+    padding: 8px 0;
+}
+
+.table-teams {
+    text-align: center;
+    font-size: 0.85em;
+    line-height: 1.4;
+}
+
+.table-team {
+    padding: 2px 0;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.table-team.team1 {
+    color: var(--green);
+}
+
+.table-team.team2 {
+    color: var(--blue);
+}
+
+.table-vs {
+    color: var(--text-secondary);
+    font-size: 0.75em;
+}
+
+/* Leaderboard Section */
+.leaderboard-section {
+    flex-shrink: 0;
+}
+
+.leaderboard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.leaderboard-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    border-radius: 8px;
+}
+
+.leaderboard-row.rank-1 {
+    background: linear-gradient(135deg, rgba(255, 215, 0, 0.2), var(--bg-card));
+    border: 1px solid var(--gold);
+}
+
+.leaderboard-row.rank-2 {
+    background: linear-gradient(135deg, rgba(192, 192, 192, 0.15), var(--bg-card));
+    border: 1px solid #c0c0c0;
+}
+
+.leaderboard-row.rank-3 {
+    background: linear-gradient(135deg, rgba(205, 127, 50, 0.15), var(--bg-card));
+    border: 1px solid #cd7f32;
+}
+
+.rank {
+    width: 28px;
+    font-weight: bold;
+    font-size: 1.1em;
+    color: var(--gold);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.avatar, .avatar-small {
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: white;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+    flex-shrink: 0;
+}
+
+.avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 0.8em;
+}
+
+.avatar-small {
+    width: 24px;
+    height: 24px;
+    font-size: 0.65em;
+}
+
+img.avatar, img.avatar-small {
+    object-fit: cover;
+    border: 2px solid var(--bg-accent);
+}
+
+.avatar-emoji {
+    font-size: 1.2em;
+    background: linear-gradient(135deg, #3d5a80, #2d4a70);
+}
+
+.player-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.player-name {
+    font-weight: 600;
+    font-size: 0.95em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-stats-small {
+    display: flex;
+    gap: 8px;
+    font-size: 0.75em;
+    margin-top: 2px;
+}
+
+.player-stats-small .wins {
+    color: var(--green);
+    font-weight: 600;
+}
+
+.player-stats-small .losses {
+    color: var(--red);
+    font-weight: 600;
+}
+
+.player-stats-small .winrate {
+    color: var(--text-secondary);
+}
+
+.points {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: var(--gold);
+    padding: 4px 10px;
+    background: var(--wvu-blue);
+    border-radius: 8px;
+    border: 1px solid var(--wvu-gold);
+    flex-shrink: 0;
+    min-width: 50px;
+    text-align: center;
+}
+
+/* Queue Section */
+.queue-section {
+    flex-shrink: 0;
+}
+
+.queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.queue-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    border-radius: 8px;
+}
+
+.queue-position {
+    width: 24px;
+    font-weight: bold;
+    color: var(--gold);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.queue-teams {
+    flex: 1;
+    font-weight: 500;
+    font-size: 0.9em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-round {
+    font-size: 0.75em;
+    color: var(--text-secondary);
+    background: var(--bg-accent);
+    padding: 3px 8px;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+/* Round Progress */
+.round-progress {
+    background: linear-gradient(135deg, var(--wvu-blue), #001a3a);
+    border-radius: 10px;
+    padding: 12px 16px;
+    border: 1px solid var(--wvu-gold);
+    flex-shrink: 0;
+}
+
+.round-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.round-label {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: var(--gold);
+}
+
+.round-stats {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+}
+
+.progress-bar {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--wvu-gold), #FFD700);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+
+/* Compact Mode */
+body.compact .stream-container {
+    padding: 12px;
+    gap: 12px;
+}
+
+body.compact .section-title {
+    font-size: 1em;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+}
+
+body.compact .leaderboard-row {
+    padding: 6px 10px;
+    gap: 8px;
+}
+
+body.compact .avatar {
+    width: 28px;
+    height: 28px;
+    font-size: 0.7em;
+}
+
+body.compact .player-name {
+    font-size: 0.85em;
+}
+
+body.compact .player-stats-small {
+    font-size: 0.7em;
+}
+
+body.compact .points {
+    font-size: 1em;
+    padding: 3px 8px;
+    min-width: 40px;
+}
+
+body.compact .rank {
+    width: 22px;
+    font-size: 0.95em;
+}
+
+body.compact .table-card {
+    padding: 8px;
+}
+
+body.compact .table-score {
+    font-size: 1.4em;
+}
+
+body.compact .table-felt {
+    padding: 8px 6px;
+    margin: 6px 0;
+}
+
+body.compact .tables-grid {
+    gap: 8px;
+}
+
+body.compact .queue-item {
+    padding: 6px 10px;
+}
+
+/* Tables Only Mode */
+body.tables-only .leaderboard-section,
+body.tables-only .queue-section {
+    display: none;
+}
+
+body.tables-only .tables-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+/* Leaderboard Only Mode */
+body.leaderboard-only .tables-section,
+body.leaderboard-only .queue-section {
+    display: none;
+}
+
+/* Responsive adjustments for different OBS resolutions */
+
+/* Large screens (1920x1080+) */
+@media (min-width: 1600px) {
+    :root {
+        --base-font-size: 18px;
+    }
+
+    .stream-container {
+        padding: 24px;
+        max-width: 1800px;
+        margin: 0 auto;
+    }
+
+    .tables-grid {
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+}
+
+/* Medium screens (1280x720) */
+@media (max-width: 1280px) {
+    :root {
+        --base-font-size: 15px;
+    }
+
+    .stream-container {
+        padding: 16px;
+        gap: 16px;
+    }
+
+    .tables-grid {
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    }
+}
+
+/* Small screens (854x480 and below) */
+@media (max-width: 900px) {
+    :root {
+        --base-font-size: 13px;
+    }
+
+    .stream-container {
+        padding: 12px;
+        gap: 12px;
+    }
+
+    .stream-header {
+        padding: 10px 15px;
+        gap: 12px;
+    }
+
+    .stream-logo {
+        height: 35px;
+    }
+
+    .stream-title {
+        font-size: 1.4em;
+    }
+
+    .tables-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 8px;
+    }
+
+    .leaderboard-row {
+        padding: 6px 10px;
+    }
+
+    .avatar {
+        width: 30px;
+        height: 30px;
+    }
+
+    .points {
+        font-size: 1em;
+        padding: 3px 8px;
+    }
+}
+
+/* Very small screens */
+@media (max-width: 600px) {
+    :root {
+        --base-font-size: 12px;
+    }
+
+    .tables-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .stream-header {
+        flex-direction: column;
+        gap: 8px;
+    }
+}
+
+/* Animation for updates */
+@keyframes highlight {
+    0% { background-color: rgba(234, 170, 0, 0.3); }
+    100% { background-color: transparent; }
+}
+
+.highlight-update {
+    animation: highlight 1s ease-out;
+}

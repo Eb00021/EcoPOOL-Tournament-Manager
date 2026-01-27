@@ -23,6 +23,13 @@ import logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
+# Try to import ngrok helper for public tunneling
+try:
+    import ngrok_helper
+    NGROK_AVAILABLE = True
+except ImportError:
+    NGROK_AVAILABLE = False
+
 
 # ============ Security Helper Functions ============
 
@@ -288,7 +295,96 @@ class LiveScoreServer:
         @self.app.route('/')
         def index():
             return render_template('index.html')
-        
+
+        @self.app.route('/favicon.ico')
+        def favicon():
+            """Serve the favicon."""
+            icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+            if os.path.exists(icon_path):
+                return send_file(icon_path, mimetype='image/x-icon')
+            # Fallback to logo.png if no .ico file
+            logo_path = os.path.join(os.path.dirname(__file__), "static", "images", "logo.png")
+            if os.path.exists(logo_path):
+                return send_file(logo_path, mimetype='image/png')
+            abort(404)
+
+        @self.app.route('/stream')
+        def stream_overlay():
+            """Streaming overlay view for OBS/Streamlabs.
+
+            Query parameters:
+                mode: 'all', 'tables', 'leaderboard', 'queue' (default: 'all')
+                transparent: 'true' for transparent background (default: false)
+                header: 'true'/'false' to show/hide header (default: true)
+                players: max leaderboard entries (default: 10)
+                tables: max tables to show (default: 8)
+                refresh: refresh rate in ms (default: 3000)
+                compact: 'true' for compact layout (default: false)
+                bg: background color hex without # (default: none)
+                fontsize: base font size in px (default: 16)
+            """
+            # Parse query parameters
+            mode = request.args.get('mode', 'all')
+            if mode not in ('all', 'tables', 'leaderboard', 'queue'):
+                mode = 'all'
+
+            transparent = request.args.get('transparent', 'false').lower() == 'true'
+            show_header = request.args.get('header', 'true').lower() != 'false'
+            compact = request.args.get('compact', 'false').lower() == 'true'
+
+            try:
+                max_players = int(request.args.get('players', '10'))
+                max_players = max(1, min(50, max_players))
+            except ValueError:
+                max_players = 10
+
+            try:
+                max_tables = int(request.args.get('tables', '8'))
+                max_tables = max(1, min(20, max_tables))
+            except ValueError:
+                max_tables = 8
+
+            try:
+                refresh_rate = int(request.args.get('refresh', '3000'))
+                refresh_rate = max(1000, min(30000, refresh_rate))
+            except ValueError:
+                refresh_rate = 3000
+
+            # Background color (hex without #)
+            bg_color = request.args.get('bg', '')
+            if bg_color:
+                # Validate it's a valid hex color
+                if len(bg_color) in (3, 6) and all(c in '0123456789abcdefABCDEF' for c in bg_color):
+                    bg_color = f'#{bg_color}'
+                else:
+                    bg_color = ''
+
+            # Font size
+            try:
+                font_size = int(request.args.get('fontsize', '16'))
+                font_size = max(8, min(32, font_size))
+            except ValueError:
+                font_size = 16
+
+            return render_template(
+                'stream.html',
+                mode=mode,
+                transparent=transparent,
+                show_header=show_header,
+                compact=compact,
+                max_players=max_players,
+                max_tables=max_tables,
+                refresh_rate=refresh_rate,
+                bg_color=bg_color,
+                font_size=font_size
+            )
+
+        # Alias for stream overlay
+        @self.app.route('/broadcast')
+        def broadcast_overlay():
+            """Alias for /stream - streaming overlay view."""
+            return stream_overlay()
+
         @self.app.route('/api/scores')
         def get_scores():
             """API endpoint for current scores."""
@@ -2340,32 +2436,51 @@ class LiveScoreServer:
     
     def start(self) -> tuple[bool, str]:
         """Start the web server in a background thread.
-        
+
         Returns:
             Tuple of (success, message/URL)
         """
         if self.running:
             return False, "Server is already running"
-        
+
         try:
             # Find an available port
             self.port = self._find_available_port(self.port)
-            
+
             self.running = True
             self.server_thread = threading.Thread(
                 target=self._run_server,
                 daemon=True
             )
             self.server_thread.start()
-            
+
             # Wait a moment for server to start
             time.sleep(0.5)
-            
+
+            # Check if ngrok is enabled
+            ngrok_enabled = self.db.get_setting('ngrok_enabled', 'false') == 'true'
+
+            if ngrok_enabled and NGROK_AVAILABLE:
+                # Try to start ngrok tunnel
+                auth_token = self.db.get_setting('ngrok_auth_token', '')
+                static_domain = self.db.get_setting('ngrok_static_domain', '')
+                success, result = ngrok_helper.start_tunnel(
+                    self.port,
+                    auth_token if auth_token else None,
+                    static_domain if static_domain else None
+                )
+                if success:
+                    return True, result  # Return public ngrok URL
+                else:
+                    # Ngrok failed, fall back to local
+                    print(f"Ngrok tunnel failed: {result}")
+
+            # Return local URL (default or ngrok fallback)
             local_ip = self.get_local_ip()
             url = f"http://{local_ip}:{self.port}"
-            
+
             return True, url
-            
+
         except Exception as e:
             self.running = False
             return False, f"Failed to start server: {str(e)}"
@@ -2405,11 +2520,15 @@ class LiveScoreServer:
         self.running = False
         self._shutdown_event.set()  # Signal shutdown to SSE streams
         self._update_event.set()  # Wake up any waiting threads
-        
+
+        # Stop ngrok tunnel if active
+        if NGROK_AVAILABLE:
+            ngrok_helper.stop_tunnel()
+
         # Remove from active servers list
         if self in _active_servers:
             _active_servers.remove(self)
-        
+
         # Close thread-local database connection if it exists
         if hasattr(self._local, 'db'):
             try:

@@ -10,6 +10,9 @@
     <meta name="msapplication-TileColor" content="#0d1117">
     <meta name="format-detection" content="telephone=no">
     <title>EcoPOOL Live Scores</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/logo.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -24,6 +27,9 @@
             <button id="manager-toggle" class="manager-toggle-btn" onclick="toggleManagerMode()">
                 🔧 Manager Mode
             </button>
+            <a href="/stream" target="_blank" id="stream-link" class="manager-toggle-btn" style="text-decoration: none; display: none; align-items: center;">
+                📺 Stream View
+            </a>
         </div>
     </div>
     

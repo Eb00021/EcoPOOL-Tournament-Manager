@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EcoPOOL Stream Overlay</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/stream.css') }}">
+    <style>
+        /* Dynamic styles based on query parameters */
+        {% if transparent %}
+        body, html {
+            background: transparent !important;
+        }
+        .stream-container {
+            background: transparent !important;
+        }
+        {% endif %}
+
+        {% if bg_color %}
+        body {
+            background: {{ bg_color }} !important;
+        }
+        {% endif %}
+
+        {% if font_size %}
+        :root {
+            --base-font-size: {{ font_size }}px;
+        }
+        {% endif %}
+    </style>
+</head>
+<body class="stream-body {{ 'transparent' if transparent else '' }} {{ 'tables-only' if mode == 'tables' else '' }} {{ 'leaderboard-only' if mode == 'leaderboard' else '' }}">
+    <div class="stream-container">
+        <!-- Header (optional, can be hidden via ?header=false) -->
+        {% if show_header %}
+        <div class="stream-header">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="EcoPOOL" class="stream-logo">
+            <div class="stream-title">Live Scores</div>
+            <div class="live-badge">
+                <span class="live-dot"></span>
+                <span>LIVE</span>
+            </div>
+        </div>
+        {% endif %}
+
+        <div id="stream-content">
+            <div class="loading-state">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration from query params
+        const config = {
+            mode: '{{ mode }}',           // 'all', 'tables', 'leaderboard', 'queue'
+            maxPlayers: {{ max_players }}, // Max leaderboard entries
+            maxTables: {{ max_tables }},   // Max tables to show
+            refreshRate: {{ refresh_rate }}, // Refresh rate in ms
+            showHeader: {{ 'true' if show_header else 'false' }},
+            compact: {{ 'true' if compact else 'false' }}
+        };
+
+        // Avatar colors
+        const AVATAR_COLORS = [
+            ["#FF6B6B", "#C62828"], ["#4ECDC4", "#00897B"], ["#45B7D1", "#0277BD"],
+            ["#96CEB4", "#388E3C"], ["#FFEAA7", "#F9A825"], ["#DDA0DD", "#7B1FA2"],
+            ["#F8B500", "#E65100"], ["#85C1E9", "#1565C0"], ["#BB8FCE", "#6A1B9A"],
+            ["#98D8C8", "#00695C"], ["#F7DC6F", "#FBC02D"], ["#FF69B4", "#C2185B"]
+        ];
+
+        function getAvatarColorForName(name) {
+            let hash = 0;
+            for (let i = 0; i < name.length; i++) {
+                hash = name.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+        }
+
+        function getInitials(name) {
+            if (!name) return '?';
+            const parts = name.trim().split(' ');
+            if (parts.length >= 2) {
+                return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+            }
+            return parts[0].substring(0, 2).toUpperCase();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function createAvatar(name, profilePicture, size = 'normal') {
+            const sizeClass = size === 'small' ? 'avatar-small' : 'avatar';
+
+            if (profilePicture && (profilePicture.includes('/') || profilePicture.includes('\\'))) {
+                const parts = profilePicture.replace(/\\/g, '/').split('/');
+                const filename = parts[parts.length - 1];
+                const url = `/api/pfp/${encodeURIComponent(filename)}`;
+                return `<img class="${sizeClass}" src="${url}" alt="${escapeHtml(name)}" onerror="this.outerHTML=createAvatarFallback('${escapeHtml(name)}', '${size}')">`;
+            }
+
+            if (profilePicture && profilePicture.startsWith('emoji:')) {
+                const emoji = profilePicture.substring(6);
+                return `<div class="${sizeClass} avatar-emoji">${emoji}</div>`;
+            }
+
+            return createAvatarFallback(name, size);
+        }
+
+        function createAvatarFallback(name, size = 'normal') {
+            const colors = getAvatarColorForName(name);
+            const initials = getInitials(name);
+            const sizeClass = size === 'small' ? 'avatar-small' : 'avatar';
+            return `<div class="${sizeClass}" style="background: linear-gradient(135deg, ${colors[0]}, ${colors[1]})">${initials}</div>`;
+        }
+
+        function renderTables(tables) {
+            if (!tables || tables.length === 0) {
+                return '<div class="empty-message">No active tables</div>';
+            }
+
+            const displayTables = tables.slice(0, config.maxTables);
+
+            return `
+                <div class="tables-section">
+                    <div class="section-title">Pool Tables</div>
+                    <div class="tables-grid">
+                        ${displayTables.map(table => {
+                            // Tables data structure has status='live' or 'available', not a nested match object
+                            const tableNum = table.table_number || table.number || '?';
+
+                            if (!table || table.status !== 'live') {
+                                return `
+                                    <div class="table-card available">
+                                        <div class="table-number">Table ${tableNum}</div>
+                                        <div class="table-felt">
+                                            <div class="table-empty">Available</div>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+
+                            // Data is directly on the table object, not in a nested match
+                            const team1Score = table.team1_games || 0;
+                            const team2Score = table.team2_games || 0;
+                            const team1Name = table.team1 || 'Team 1';
+                            const team2Name = table.team2 || 'Team 2';
+
+                            return `
+                                <div class="table-card live">
+                                    <div class="table-header">
+                                        <div class="table-number">Table ${tableNum}</div>
+                                        <div class="live-indicator-small">LIVE</div>
+                                    </div>
+                                    <div class="table-felt">
+                                        <div class="table-score">${team1Score} - ${team2Score}</div>
+                                    </div>
+                                    <div class="table-teams">
+                                        <div class="table-team team1">${escapeHtml(team1Name)}</div>
+                                        <div class="table-vs">vs</div>
+                                        <div class="table-team team2">${escapeHtml(team2Name)}</div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderLeaderboard(leaderboard) {
+            if (!leaderboard || leaderboard.length === 0) {
+                return '<div class="empty-message">No players yet</div>';
+            }
+
+            const displayPlayers = leaderboard.slice(0, config.maxPlayers);
+
+            return `
+                <div class="leaderboard-section">
+                    <div class="section-title">Leaderboard</div>
+                    <div class="leaderboard-list">
+                        ${displayPlayers.map((player, index) => {
+                            const rank = index + 1;
+                            const rankClass = rank <= 3 ? `rank-${rank}` : '';
+                            const winRate = player.win_rate || 0;
+
+                            return `
+                                <div class="leaderboard-row ${rankClass}">
+                                    <div class="rank">${rank}</div>
+                                    ${createAvatar(player.name || 'Unknown', player.profile_picture)}
+                                    <div class="player-info">
+                                        <div class="player-name">${escapeHtml(player.name || 'Unknown')}</div>
+                                        <div class="player-stats-small">
+                                            <span class="wins">${player.wins || 0}W</span>
+                                            <span class="losses">${player.losses || 0}L</span>
+                                            <span class="winrate">${Math.round(winRate)}%</span>
+                                        </div>
+                                    </div>
+                                    <div class="points">${player.points || 0}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderQueue(queue) {
+            if (!queue || queue.length === 0) {
+                return '';
+            }
+
+            return `
+                <div class="queue-section">
+                    <div class="section-title">Up Next</div>
+                    <div class="queue-list">
+                        ${queue.slice(0, 5).map((match, index) => {
+                            const team1 = match.team1 || 'TBD';
+                            const team2 = match.team2 || 'TBD';
+                            const round = match.round || match.round_number;
+                            return `
+                                <div class="queue-item">
+                                    <div class="queue-position">${match.position || index + 1}</div>
+                                    <div class="queue-teams">${escapeHtml(team1)} vs ${escapeHtml(team2)}</div>
+                                    ${round ? `<div class="queue-round">R${round}</div>` : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRoundProgress(roundProgress) {
+            if (!roundProgress) return '';
+
+            const progress = roundProgress.total > 0
+                ? Math.round((roundProgress.completed / roundProgress.total) * 100)
+                : 0;
+
+            return `
+                <div class="round-progress">
+                    <div class="round-info">
+                        <span class="round-label">Round ${roundProgress.current_round || 0}</span>
+                        <span class="round-stats">${roundProgress.live || 0} live | ${roundProgress.completed || 0}/${roundProgress.total || 0}</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${progress}%"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateUI(data) {
+            const content = document.getElementById('stream-content');
+            let html = '';
+
+            // Round progress (if applicable)
+            if (data.round_progress) {
+                html += renderRoundProgress(data.round_progress);
+            }
+
+            // Render based on mode
+            if (config.mode === 'tables' || config.mode === 'all') {
+                html += renderTables(data.tables);
+            }
+
+            if (config.mode === 'leaderboard' || config.mode === 'all') {
+                html += renderLeaderboard(data.leaderboard);
+            }
+
+            if (config.mode === 'queue' || config.mode === 'all') {
+                html += renderQueue(data.queue);
+            }
+
+            if (!html) {
+                html = '<div class="empty-message">No data available</div>';
+            }
+
+            content.innerHTML = html;
+        }
+
+        // Fetch data and update
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/scores');
+                if (!response.ok) {
+                    throw new Error(`HTTP error: ${response.status}`);
+                }
+                const data = await response.json();
+                console.log('Stream data received:', data);
+                updateUI(data);
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('stream-content').innerHTML =
+                    `<div class="empty-message">Error loading data: ${error.message}</div>`;
+            }
+        }
+
+        // Initial fetch
+        console.log('Stream overlay initialized with config:', config);
+        fetchData();
+
+        // Periodic refresh
+        setInterval(fetchData, config.refreshRate);
+    </script>
+</body>
+</html>
