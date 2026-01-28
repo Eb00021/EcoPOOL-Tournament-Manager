@@ -166,7 +166,19 @@ class TableTrackerView(ctk.CTkFrame):
             text_color="#888888"
         )
         self.round_progress_label.pack(side="right")
-        
+
+        # Export Schedule PDF button - placed prominently near top
+        self.export_btn = ctk.CTkButton(
+            self.right_frame,
+            text="Export Schedule PDF",
+            font=get_font(12),
+            fg_color="#3d5a80",
+            hover_color="#2d4a70",
+            height=35,
+            command=self.export_schedule_pdf
+        )
+        self.export_btn.pack(fill="x", padx=15, pady=(5, 10))
+
         # Header
         header = ctk.CTkFrame(self.right_frame, fg_color="#3d3a1e", corner_radius=10)
         header.pack(fill="x", padx=15, pady=10)
@@ -238,19 +250,7 @@ class TableTrackerView(ctk.CTkFrame):
         self.buyins_scroll = ctk.CTkScrollableFrame(
             self.right_frame, fg_color="transparent", height=120
         )
-        self.buyins_scroll.pack(fill="x", padx=15, pady=(0, 10))
-
-        # Export Schedule PDF button
-        self.export_btn = ctk.CTkButton(
-            self.right_frame,
-            text="Export Schedule PDF",
-            font=get_font(12),
-            fg_color="#3d5a80",
-            hover_color="#2d4a70",
-            height=35,
-            command=self.export_schedule_pdf
-        )
-        self.export_btn.pack(fill="x", padx=15, pady=(0, 15))
+        self.buyins_scroll.pack(fill="x", padx=15, pady=(0, 15))
     
     def _on_resize(self, event):
         """Handle window resize - debounced refresh for responsive layout."""
