@@ -1,6 +1,6 @@
 // EcoPOOL Service Worker
 // Version for cache busting
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const STATIC_CACHE = `ecopool-static-${CACHE_VERSION}`;
 const DATA_CACHE = `ecopool-data-${CACHE_VERSION}`;
 
@@ -12,6 +12,8 @@ const STATIC_ASSETS = [
     '/static/js/offline-db.js',
     '/static/js/sync-manager.js',
     '/static/images/logo.png',
+    '/static/images/icon-192x192.png',
+    '/static/images/icon-512x512.png',
     '/static/images/ecoREACTION.png',
     '/favicon.ico',
     '/manifest.json'
