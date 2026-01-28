@@ -4,7 +4,7 @@ Visual overview of all tables with queue management system.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from datetime import datetime
 from database import DatabaseManager
 from fonts import get_font
@@ -238,7 +238,19 @@ class TableTrackerView(ctk.CTkFrame):
         self.buyins_scroll = ctk.CTkScrollableFrame(
             self.right_frame, fg_color="transparent", height=120
         )
-        self.buyins_scroll.pack(fill="x", padx=15, pady=(0, 15))
+        self.buyins_scroll.pack(fill="x", padx=15, pady=(0, 10))
+
+        # Export Schedule PDF button
+        self.export_btn = ctk.CTkButton(
+            self.right_frame,
+            text="Export Schedule PDF",
+            font=get_font(12),
+            fg_color="#3d5a80",
+            hover_color="#2d4a70",
+            height=35,
+            command=self.export_schedule_pdf
+        )
+        self.export_btn.pack(fill="x", padx=15, pady=(0, 15))
     
     def _on_resize(self, event):
         """Handle window resize - debounced refresh for responsive layout."""
@@ -1208,6 +1220,64 @@ class TableTrackerView(ctk.CTkFrame):
             else:
                 messagebox.showinfo("Queue Empty", "No more games available in the current round.")
     
+    def export_schedule_pdf(self):
+        """Export the current league night schedule to PDF."""
+        league_night = self.db.get_current_league_night()
+        if not league_night:
+            messagebox.showwarning(
+                "No League Night",
+                "No active league night found.\n\n"
+                "Create a league night first to export the schedule."
+            )
+            return
+
+        # Check if there are any matches
+        total_rounds = self.db.get_total_rounds(league_night['id'])
+        if total_rounds == 0:
+            messagebox.showwarning(
+                "No Matches",
+                "No matches found for this league night.\n\n"
+                "Create matches first to export the schedule."
+            )
+            return
+
+        # Get save location from user
+        default_filename = f"schedule_{league_night['date'].replace('-', '')}.pdf"
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialfile=default_filename,
+            title="Save Schedule PDF"
+        )
+
+        if not filepath:
+            return  # User cancelled
+
+        # Import exporter here to avoid circular imports
+        from exporter import Exporter
+        exporter = Exporter(self.db)
+
+        success = exporter.export_league_night_schedule_pdf(league_night['id'], filepath)
+
+        if success:
+            messagebox.showinfo(
+                "Export Complete",
+                f"Schedule exported successfully!\n\n"
+                f"File saved to:\n{filepath}"
+            )
+            # Try to open the PDF
+            try:
+                import os
+                os.startfile(filepath)
+            except (AttributeError, OSError):
+                pass  # Not on Windows or couldn't open
+        else:
+            messagebox.showerror(
+                "Export Failed",
+                "Failed to export the schedule.\n\n"
+                "Please check the console for error details."
+            )
+
     def destroy(self):
         """Clean up timers on destroy."""
         if self.after_id:

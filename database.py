@@ -1806,6 +1806,99 @@ class DatabaseManager:
         partner_stats.sort(key=lambda x: (-x['win_rate'], -x['games_together']))
         return partner_stats
     
+    def get_schedule_data_for_league_night(self, league_night_id: int) -> dict:
+        """Reconstruct schedule data from database for PDF export.
+
+        Returns a dict compatible with export_match_diagram_pdf() containing:
+        - rounds: List of round data with matches
+        - total_rounds: Total number of rounds
+        - has_repeats: Whether there are repeat matchups
+        - total_repeats: Count of repeat matchups
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Get all pairs for this league night
+        pairs = self.get_pairs_for_night(league_night_id)
+        pair_lookup = {p['id']: p for p in pairs}
+
+        # Build team display names
+        def get_pair_display(pair_id: int) -> str:
+            if pair_id not in pair_lookup:
+                return "Unknown"
+            pair = pair_lookup[pair_id]
+            name1 = pair.get('player1_name', 'Unknown')
+            name2 = pair.get('player2_name')
+            if name2:
+                return f"{name1} & {name2}"
+            return name1
+
+        # Get total rounds
+        total_rounds = self.get_total_rounds(league_night_id)
+
+        if total_rounds == 0:
+            return {
+                'rounds': [],
+                'total_rounds': 0,
+                'has_repeats': False,
+                'total_repeats': 0
+            }
+
+        rounds_data = []
+        total_repeats = 0
+
+        for round_num in range(1, total_rounds + 1):
+            # Get matches for this round
+            matches = self.get_matches_for_round(league_night_id, round_num)
+
+            # Build team display list for this round
+            team_ids = set()
+            for match in matches:
+                if match.get('pair1_id'):
+                    team_ids.add(match['pair1_id'])
+                if match.get('pair2_id'):
+                    team_ids.add(match['pair2_id'])
+
+            team_display = [get_pair_display(pid) for pid in sorted(team_ids)]
+
+            # Build match display data
+            match_display = []
+            round_repeats = 0
+
+            for i, match in enumerate(matches, 1):
+                team1 = get_pair_display(match.get('pair1_id'))
+                team2 = get_pair_display(match.get('pair2_id'))
+
+                # Check for repeat (simplified - would need matchup history for accurate count)
+                is_repeat = False
+                repeat_count = 0
+
+                match_display.append({
+                    'match_num': i,
+                    'team1': team1,
+                    'team2': team2,
+                    'is_repeat': is_repeat,
+                    'repeat_count': repeat_count,
+                    'table_number': match.get('table_number'),
+                    'status': match.get('status', 'queued')
+                })
+
+            rounds_data.append({
+                'round_num': round_num,
+                'team_display': team_display,
+                'match_display': match_display,
+                'round_repeats': round_repeats
+            })
+
+            total_repeats += round_repeats
+
+        return {
+            'rounds': rounds_data,
+            'total_rounds': total_rounds,
+            'has_repeats': total_repeats > 0,
+            'total_repeats': total_repeats
+        }
+
     def close(self):
         """Close database connection."""
         if self.conn:

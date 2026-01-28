@@ -11,7 +11,8 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak,
+    HRFlowable
 )
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 import csv
@@ -655,26 +656,47 @@ class Exporter:
                     ))
                     elements.append(Spacer(1, 15))
                 
-                for round_data in rounds:
-                    # Round header
+                for idx, round_data in enumerate(rounds):
+                    # Round header - prominent styled header with background
                     round_num = round_data.get('round_num', 1)
                     round_repeats = round_data.get('round_repeats', 0)
-                    
-                    round_header = f"Round {round_num}"
+                    match_count = len(round_data.get('match_display', []))
+
+                    # Create round header table for styled background
+                    round_header_text = f"Round {round_num}"
+                    round_summary = f"{match_count} match{'es' if match_count != 1 else ''}"
                     if round_repeats > 0:
-                        round_header += f" ({round_repeats} repeat{'s' if round_repeats > 1 else ''})"
-                    
-                    elements.append(Paragraph(
-                        round_header,
-                        ParagraphStyle('RoundHeader', parent=self.styles['Heading3'],
-                                      fontSize=14, textColor=colors.HexColor('#2d7a3e'),
-                                      spaceAfter=8)
-                    ))
-                    
+                        round_summary += f" | {round_repeats} repeat{'s' if round_repeats != 1 else ''}"
+
+                    header_data = [[
+                        Paragraph(f"<b>{round_header_text}</b>",
+                                 ParagraphStyle('RoundHeaderText', fontSize=16,
+                                              textColor=colors.white, alignment=TA_LEFT)),
+                        Paragraph(round_summary,
+                                 ParagraphStyle('RoundSummary', fontSize=11,
+                                              textColor=colors.white, alignment=TA_CENTER))
+                    ]]
+
+                    header_table = Table(header_data, colWidths=[3*inch, 3.5*inch])
+                    header_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#2d7a3e')),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (0, 0), 15),
+                        ('RIGHTPADDING', (-1, 0), (-1, 0), 15),
+                        ('TOPPADDING', (0, 0), (-1, -1), 10),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+                    ]))
+                    elements.append(header_table)
+
+                    # Horizontal rule separator
+                    elements.append(HRFlowable(width="100%", thickness=2,
+                                             color=colors.HexColor('#1a5f2a'),
+                                             spaceBefore=0, spaceAfter=8))
+
                     # Teams for this round
                     team_display = round_data.get('team_display', [])
                     if team_display:
-                        teams_text = " | ".join([f"<b>T{i+1}:</b> {name}" 
+                        teams_text = " | ".join([f"<b>T{i+1}:</b> {name}"
                                                 for i, name in enumerate(team_display)])
                         elements.append(Paragraph(
                             teams_text,
@@ -682,10 +704,15 @@ class Exporter:
                                           fontSize=9, textColor=colors.grey)
                         ))
                         elements.append(Spacer(1, 5))
-                    
+
                     # Matches table for this round
                     self._add_matches_table(elements, round_data.get('match_display', []))
-                    elements.append(Spacer(1, 15))
+
+                    # Add page break between rounds (not after the last round)
+                    if idx < len(rounds) - 1:
+                        elements.append(PageBreak())
+                    else:
+                        elements.append(Spacer(1, 15))
             
             else:
                 # Single round format
@@ -748,31 +775,75 @@ class Exporter:
             print(f"Error exporting match diagram: {e}")
             return False
     
-    def _add_matches_table(self, elements: list, match_display: list):
-        """Helper to add a matches table to PDF elements."""
+    def _add_matches_table(self, elements: list, match_display: list,
+                           show_table_column: bool = False):
+        """Helper to add a matches table to PDF elements.
+
+        Args:
+            elements: List of PDF elements to append to
+            match_display: List of match data dicts
+            show_table_column: If True, shows Table # and Status columns (for post-creation export)
+        """
         if not match_display:
             elements.append(Paragraph("No matches generated.", self.styles['Normal']))
             return
-        
-        matches_data = [['Match', 'Team 1', 'VS', 'Team 2', 'Status']]
-        
+
+        # Check if any matches have table/status info (post-creation export)
+        has_table_info = any(match.get('table_number') or match.get('status')
+                           for match in match_display)
+        show_extra_columns = show_table_column or has_table_info
+
+        if show_extra_columns:
+            matches_data = [['Match', 'Team 1', 'VS', 'Team 2', 'Table', 'Status']]
+        else:
+            matches_data = [['Match', 'Team 1', 'VS', 'Team 2', 'Status']]
+
         for match in match_display:
             is_repeat = match.get('is_repeat', False)
             repeat_count = match.get('repeat_count', 0)
-            
-            status = "New"
-            if is_repeat:
+
+            # Determine status text
+            match_status = match.get('status', '')
+            if match_status == 'completed':
+                status = "Completed"
+            elif match_status == 'live':
+                status = "Live"
+            elif match_status == 'queued':
+                status = "Queued"
+            elif is_repeat:
                 status = f"Repeat (x{repeat_count})"
-            
-            matches_data.append([
-                f"Match {match['match_num']}",
-                match['team1'],
-                'VS',
-                match['team2'],
-                status
-            ])
-        
-        matches_table = Table(matches_data, colWidths=[0.8*inch, 2*inch, 0.5*inch, 2*inch, 1*inch])
+            else:
+                status = "New"
+
+            # Get table number
+            table_num = match.get('table_number')
+            table_text = f"Table {table_num}" if table_num else "-"
+
+            if show_extra_columns:
+                matches_data.append([
+                    f"Match {match['match_num']}",
+                    match['team1'],
+                    'VS',
+                    match['team2'],
+                    table_text,
+                    status
+                ])
+            else:
+                matches_data.append([
+                    f"Match {match['match_num']}",
+                    match['team1'],
+                    'VS',
+                    match['team2'],
+                    status
+                ])
+
+        # Adjust column widths based on whether extra columns are shown
+        if show_extra_columns:
+            col_widths = [0.7*inch, 1.7*inch, 0.4*inch, 1.7*inch, 0.7*inch, 0.8*inch]
+        else:
+            col_widths = [0.8*inch, 2*inch, 0.5*inch, 2*inch, 1*inch]
+
+        matches_table = Table(matches_data, colWidths=col_widths)
         matches_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -786,13 +857,59 @@ class Exporter:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f4f8')]),
         ]))
-        
-        # Highlight repeat rows with orange background
+
+        # Apply status-based row colors
         for i, match in enumerate(match_display, 1):
-            if match.get('is_repeat', False):
+            match_status = match.get('status', '')
+            is_repeat = match.get('is_repeat', False)
+
+            if match_status == 'completed':
+                # Green tint for completed
+                matches_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, i), (-1, i), colors.HexColor('#e8f5e9')),
+                ]))
+            elif match_status == 'live':
+                # Blue tint for live
+                matches_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, i), (-1, i), colors.HexColor('#e3f2fd')),
+                ]))
+            elif is_repeat:
+                # Orange tint for repeats
                 matches_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, i), (-1, i), colors.HexColor('#fff3e0')),
                     ('TEXTCOLOR', (-1, i), (-1, i), colors.HexColor('#e65100')),
                 ]))
-        
+
         elements.append(matches_table)
+
+    def export_league_night_schedule_pdf(self, league_night_id: int, filepath: str) -> bool:
+        """Export match schedule for a league night from database.
+
+        This method retrieves schedule data from saved matches and exports to PDF.
+        Useful for exporting the schedule after matches have been created.
+
+        Args:
+            league_night_id: The league night ID to export
+            filepath: Output PDF file path
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get schedule data from database
+            schedule_data = self.db.get_schedule_data_for_league_night(league_night_id)
+
+            if not schedule_data.get('rounds'):
+                print("No schedule data found for this league night")
+                return False
+
+            # Use existing export method with multi-round format
+            return self.export_match_diagram_pdf(
+                pairings_data=schedule_data,
+                filepath=filepath,
+                is_multi_round=True
+            )
+
+        except Exception as e:
+            print(f"Error exporting league night schedule: {e}")
+            return False

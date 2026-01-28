@@ -44,6 +44,7 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - See which tables have active or completed matches
 - Configurable table count
 - Click a match to jump to Scorecard with that match selected
+- **Export Schedule PDF**: Export the current league night schedule after matches are created, with each round on its own page
 
 ### 🏆 Tournament Bracket
 - Seeded bracket for end-of-semester finals (4, 8, 16, or 32 players)
@@ -169,7 +170,8 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - Real-time sync with desktop app and all spectator views
 
 ### 📄 Export & Data Management
-- **PDF**: Scorecards, leaderboard, match history, match diagram, bracket
+- **PDF**: Scorecards, leaderboard, match history, match diagram, bracket, league night schedule
+  - Schedule PDF features page breaks between rounds, styled round headers with match counts, and table/status columns
 - **CSV**: Players, matches
 - **JSON**: Save/load match history (backup/restore); export/import players
 - **New Pool Night**: Clear incomplete matches, keep completed games for leaderboard; optional save before clearing
