@@ -427,9 +427,14 @@
                         <div id="manager-panel" class="manager-panel active">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                                 <h2 style="margin: 0;">🔧 Manager Mode - Score Entry</h2>
-                                <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
-                                    💳 Payment Portal
-                                </button>
+                                <div style="display: flex; gap: 8px;">
+                                    <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                        💳 Payment Portal
+                                    </button>
+                                    <button id="google-sheet-btn" onclick="updateGoogleSheet()" style="background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                        📊 Update Google Sheet
+                                    </button>
+                                </div>
                             </div>
                             
                             <div class="manager-match-selector">
@@ -1530,6 +1535,26 @@
             }
         }
         
+        // ========================================
+        // RULES MODAL
+        // ========================================
+        function openRulesModal() {
+            haptic('modalOpen');
+            document.getElementById('rules-modal').classList.add('active');
+        }
+
+        function closeRulesModal() {
+            haptic('modalClose');
+            document.getElementById('rules-modal').classList.remove('active');
+        }
+
+        // Close rules modal on background click
+        document.getElementById('rules-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeRulesModal();
+            }
+        });
+
         // Close modal on background click or swipe down (mobile)
         const modal = document.getElementById('scorecard-modal');
         let modalTouchStartY = 0;
@@ -1962,6 +1987,36 @@
             window.open('/admin/payments/login', '_blank');
         }
 
+        async function updateGoogleSheet() {
+            const btn = document.getElementById('google-sheet-btn');
+            if (!btn) return;
+
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Updating...';
+
+            try {
+                const response = await fetch('/api/manager/update-google-sheet', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_token: managerSessionToken})
+                });
+                const data = await response.json();
+                if (data.success) {
+                    btn.innerHTML = '✅ Updated!';
+                    setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 2000);
+                } else {
+                    alert('Google Sheet update failed: ' + (data.error || 'Unknown error'));
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (err) {
+                alert('Google Sheet update failed: ' + err.message);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
         function loadManagerMatches() {
             fetch('/api/scores')
                 .then(r => r.json())
@@ -1969,14 +2024,29 @@
                     const select = document.getElementById('manager-match-select');
                     if (!select) return; // Panel might not be rendered yet
                     select.innerHTML = '<option value="">-- Select a match --</option>';
-                    
+
                     if (data.live_matches && data.live_matches.length > 0) {
+                        const liveGroup = document.createElement('optgroup');
+                        liveGroup.label = 'Live Matches';
                         data.live_matches.forEach(match => {
                             const option = document.createElement('option');
                             option.value = match.id;
                             option.textContent = `${match.team1} vs ${match.team2} (Table ${match.table})`;
-                            select.appendChild(option);
+                            liveGroup.appendChild(option);
                         });
+                        select.appendChild(liveGroup);
+                    }
+
+                    if (data.completed_matches && data.completed_matches.length > 0) {
+                        const completedGroup = document.createElement('optgroup');
+                        completedGroup.label = 'Completed Matches';
+                        data.completed_matches.forEach(match => {
+                            const option = document.createElement('option');
+                            option.value = match.id;
+                            option.textContent = `${match.team1} vs ${match.team2} (Completed)`;
+                            completedGroup.appendChild(option);
+                        });
+                        select.appendChild(completedGroup);
                     }
                 })
                 .catch(console.error);
@@ -2237,20 +2307,27 @@
                     
                     // If no active game found, check if match is complete
                     if (!currentManagerGame) {
-                        if (data.match.is_complete) {
-                            alert('This match is complete. No active games to manage.');
+                        if (data.match.is_complete || data.games.every(g => g.winner_team > 0)) {
+                            showCompletedMatchEditor(data);
+                            return;
                         } else if (data.games.length === 0) {
                             alert('No games found for this match. Please try refreshing.');
-                        } else {
-                            alert('All games in this match are complete.');
+                            document.getElementById('manager-match-content').style.display = 'none';
+                            return;
                         }
-                        document.getElementById('manager-match-content').style.display = 'none';
-                        return;
                     }
-                    
+
                     document.getElementById('manager-team1-name').textContent = (data.match.team1_p1_name || 'Team 1') + (data.match.team1_p2_name ? ' & ' + data.match.team1_p2_name : '');
                     document.getElementById('manager-team2-name').textContent = (data.match.team2_p1_name || 'Team 2') + (data.match.team2_p2_name ? ' & ' + data.match.team2_p2_name : '');
-                    
+
+                    // Hide completed match editor, restore normal UI
+                    const editorEl = document.getElementById('completed-match-editor');
+                    if (editorEl) editorEl.style.display = 'none';
+                    const ballGrids = document.querySelectorAll('.manager-balls-grid');
+                    ballGrids.forEach(g => g.style.display = '');
+                    const actionsEl = document.querySelector('.manager-actions');
+                    if (actionsEl) actionsEl.style.display = '';
+
                     renderManagerBalls();
                     updateManagerScores();
                     document.getElementById('manager-match-content').style.display = 'block';
@@ -2261,9 +2338,121 @@
                 });
         }
         
+        function showCompletedMatchEditor(data) {
+            const match = data.match;
+            const games = data.games;
+            const team1Name = (match.team1_p1_name || 'Team 1') + (match.team1_p2_name ? ' & ' + match.team1_p2_name : '');
+            const team2Name = (match.team2_p1_name || 'Team 2') + (match.team2_p2_name ? ' & ' + match.team2_p2_name : '');
+
+            document.getElementById('manager-team1-name').textContent = team1Name;
+            document.getElementById('manager-team2-name').textContent = team2Name;
+
+            // Hide normal ball interface, show completed editor
+            document.getElementById('manager-match-content').style.display = 'block';
+
+            // Build or reuse the completed match editor div
+            let editor = document.getElementById('completed-match-editor');
+            if (!editor) {
+                editor = document.createElement('div');
+                editor.id = 'completed-match-editor';
+                document.getElementById('manager-match-content').appendChild(editor);
+            }
+            editor.style.display = 'block';
+
+            // Hide normal ball grids and actions while showing editor
+            const ballGrids = document.querySelectorAll('.manager-balls-grid');
+            ballGrids.forEach(g => g.style.display = 'none');
+            const actions = document.querySelector('.manager-actions');
+            if (actions) actions.style.display = 'none';
+
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+
+            let html = `<div style="margin-top: 15px;">
+                <h3 style="color: var(--yellow); margin-bottom: 10px;">Match Complete — Edit Games</h3>
+                <div style="margin-bottom: 15px;">
+                    <label style="font-weight: bold; display: block; margin-bottom: 5px;">Select Game:</label>
+                    <select id="completed-game-select" style="width: 100%; padding: 8px; border-radius: 6px; background: var(--card-bg); color: var(--text-primary); border: 1px solid var(--border);">
+                        ${games.map(g => {
+                            const winner = g.winner_team === 1 ? team1Name : g.winner_team === 2 ? team2Name : 'No winner';
+                            const earlyTag = g.early_8ball_team ? ' (Early 8)' : '';
+                            const goldenTag = g.golden_break ? ' (Golden Break)' : '';
+                            return `<option value="${g.game_number}">Game ${g.game_number} — ${g.team1_score}-${g.team2_score} | ${winner} wins${earlyTag}${goldenTag}</option>`;
+                        }).join('')}
+                    </select>
+                </div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button onclick="revertSelectedGame()" style="flex: 1; padding: 10px; background: var(--orange, #d29922); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                        Revert Game (Replay)
+                    </button>
+                    ${match.is_complete ? `<button onclick="reopenMatch()" style="flex: 1; padding: 10px; background: var(--red, #f85149); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                        Reopen Match
+                    </button>` : ''}
+                </div>
+            </div>`;
+
+            editor.innerHTML = html;
+        }
+
+        function revertSelectedGame() {
+            const gameNumber = parseInt(document.getElementById('completed-game-select').value);
+            if (!currentManagerMatch || !gameNumber) return;
+            if (!confirm(`Revert Game ${gameNumber}? This will clear its result and let you replay it.`)) return;
+
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            fetch('/api/manager/revert-game', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    match_id: currentManagerMatch.id,
+                    game_number: gameNumber,
+                    session_token: sessionToken
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadManagerMatch();
+                } else {
+                    alert('Failed to revert game: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => {
+                console.error('Error reverting game:', err);
+                alert('Failed to revert game');
+            });
+        }
+
+        function reopenMatch() {
+            if (!currentManagerMatch) return;
+            if (!confirm('Reopen this match? It will return to live status.')) return;
+
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            fetch('/api/manager/revert-match-completion', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    match_id: currentManagerMatch.id,
+                    session_token: sessionToken
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    loadManagerMatches();
+                    loadManagerMatch();
+                } else {
+                    alert('Failed to reopen match: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(err => {
+                console.error('Error reopening match:', err);
+                alert('Failed to reopen match');
+            });
+        }
+
         function renderManagerBalls() {
             if (!currentManagerGame) return;
-            
+
             const balls = JSON.parse(currentManagerGame.balls_pocketed || '{}');
             const team1Container = document.getElementById('manager-team1-balls');
             const team2Container = document.getElementById('manager-team2-balls');

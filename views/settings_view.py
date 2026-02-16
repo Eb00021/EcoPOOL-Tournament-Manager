@@ -10,6 +10,7 @@ import shutil
 import hashlib
 from datetime import datetime
 from database import DatabaseManager
+from excel_importer import ExcelImporter
 from fonts import get_font
 
 
@@ -401,6 +402,123 @@ class SettingsView(ctk.CTkFrame):
             text_color='#666666'
         ).pack(anchor='w', pady=(5, 0))
 
+        # ========== Google Drive Section ==========
+        self._create_section(content, 'Google Drive')
+
+        gdrive_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
+        gdrive_card.pack(fill='x', pady=10)
+
+        gdrive_inner = ctk.CTkFrame(gdrive_card, fg_color='transparent')
+        gdrive_inner.pack(fill='x', padx=20, pady=15)
+
+        ctk.CTkLabel(
+            gdrive_inner,
+            text='Google Sheets Integration',
+            font=get_font(14, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkLabel(
+            gdrive_inner,
+            text='Upload weekly scores to a Google Sheets spreadsheet via service account',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        # Credentials file
+        ctk.CTkLabel(
+            gdrive_inner,
+            text='Service Account Credentials (JSON)',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(15, 5))
+
+        creds_row = ctk.CTkFrame(gdrive_inner, fg_color='transparent')
+        creds_row.pack(fill='x', pady=5)
+
+        saved_creds = self.db.get_setting('google_credentials_path', '')
+        self.gdrive_creds_var = ctk.StringVar(value=saved_creds)
+
+        self.gdrive_creds_label = ctk.CTkLabel(
+            creds_row,
+            text=os.path.basename(saved_creds) if saved_creds else 'No file selected',
+            font=get_font(11),
+            text_color='#aaaaaa'
+        )
+        self.gdrive_creds_label.pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            creds_row,
+            text='Browse...',
+            font=get_font(11),
+            fg_color='#3d5a80',
+            hover_color='#2d4a70',
+            height=35,
+            width=100,
+            command=self._browse_gdrive_credentials
+        ).pack(side='left')
+
+        # Spreadsheet ID
+        ctk.CTkLabel(
+            gdrive_inner,
+            text='Spreadsheet ID',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(15, 5))
+
+        ctk.CTkLabel(
+            gdrive_inner,
+            text='The ID from the Google Sheets URL (between /d/ and /edit)',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        sheet_row = ctk.CTkFrame(gdrive_inner, fg_color='transparent')
+        sheet_row.pack(fill='x', pady=5)
+
+        saved_sheet_id = self.db.get_setting('google_spreadsheet_id', '')
+        self.gdrive_sheet_var = ctk.StringVar(value=saved_sheet_id)
+
+        ctk.CTkEntry(
+            sheet_row,
+            textvariable=self.gdrive_sheet_var,
+            height=40,
+            width=300,
+            font=get_font(12),
+            placeholder_text='Enter spreadsheet ID'
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            sheet_row,
+            text='Save',
+            font=get_font(11),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=80,
+            command=self._save_gdrive_sheet_id
+        ).pack(side='left')
+
+        # Test Connection button
+        test_row = ctk.CTkFrame(gdrive_inner, fg_color='transparent')
+        test_row.pack(fill='x', pady=10)
+
+        ctk.CTkButton(
+            test_row,
+            text='Test Connection',
+            font=get_font(12),
+            fg_color='#6b4e8a',
+            hover_color='#5b3e7a',
+            height=40,
+            width=150,
+            command=self._test_gdrive_connection
+        ).pack(side='left')
+
+        self.gdrive_status_label = ctk.CTkLabel(
+            gdrive_inner,
+            text='',
+            font=get_font(11),
+            text_color='#888888'
+        )
+        self.gdrive_status_label.pack(anchor='w', pady=(5, 0))
+
         # ========== Season Management Section ==========
         self._create_section(content, 'Season Management')
 
@@ -574,6 +692,33 @@ class SettingsView(ctk.CTkFrame):
             width=130,
             command=self._import_players
         ).pack(side='left', padx=5)
+
+        # Excel Import section
+        ctk.CTkFrame(data_inner, height=1, fg_color='#444444').pack(fill='x', pady=15)
+
+        ctk.CTkLabel(
+            data_inner,
+            text='Excel Import',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkLabel(
+            data_inner,
+            text='Import players, pairs, matchups, and scores from the master Excel scoresheet.',
+            font=get_font(11),
+            text_color='#aaaaaa'
+        ).pack(anchor='w', pady=(2, 8))
+
+        ctk.CTkButton(
+            data_inner,
+            text='Import Excel Workbook',
+            font=get_font(11),
+            fg_color='#2d7a3e',
+            hover_color='#1a5f2a',
+            height=35,
+            width=200,
+            command=self._import_excel_workbook
+        ).pack(anchor='w')
 
         # Separator
         ctk.CTkFrame(data_inner, height=1, fg_color='#444444').pack(fill='x', pady=15)
@@ -790,6 +935,22 @@ class SettingsView(ctk.CTkFrame):
             else:
                 messagebox.showerror("Error", message)
 
+    def _import_excel_workbook(self):
+        """Import data from an Excel workbook."""
+        filepath = filedialog.askopenfilename(
+            filetypes=[("Excel files", "*.xlsx *.xls")],
+            title="Import Excel Workbook"
+        )
+        if filepath:
+            importer = ExcelImporter(self.db)
+            success, message = importer.import_workbook(filepath)
+            if success:
+                messagebox.showinfo("Success", message)
+                if self.on_data_change:
+                    self.on_data_change()
+            else:
+                messagebox.showerror("Error", message)
+
     def _save_venmo(self):
         """Save organizer Venmo username."""
         username = self.venmo_var.get().strip().lstrip('@')
@@ -899,6 +1060,68 @@ class SettingsView(ctk.CTkFrame):
                 )
         else:
             messagebox.showinfo("Cleared", "Static domain cleared")
+
+    def _browse_gdrive_credentials(self):
+        """Browse for Google service account JSON credentials file."""
+        filepath = filedialog.askopenfilename(
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            title='Select Service Account Credentials'
+        )
+        if filepath:
+            self.gdrive_creds_var.set(filepath)
+            self.db.set_setting('google_credentials_path', filepath)
+            self.gdrive_creds_label.configure(
+                text=os.path.basename(filepath),
+                text_color='#4CAF50'
+            )
+            messagebox.showinfo("Saved", f"Credentials file saved:\n{os.path.basename(filepath)}")
+
+    def _save_gdrive_sheet_id(self):
+        """Save Google Sheets spreadsheet ID."""
+        sheet_id = self.gdrive_sheet_var.get().strip()
+        self.db.set_setting('google_spreadsheet_id', sheet_id)
+        if sheet_id:
+            messagebox.showinfo("Saved", "Spreadsheet ID saved")
+        else:
+            messagebox.showinfo("Cleared", "Spreadsheet ID cleared")
+
+    def _test_gdrive_connection(self):
+        """Test Google Sheets connection."""
+        creds_path = self.db.get_setting('google_credentials_path', '')
+        sheet_id = self.db.get_setting('google_spreadsheet_id', '')
+
+        if not creds_path:
+            self.gdrive_status_label.configure(
+                text='No credentials file set', text_color='#ff6b6b'
+            )
+            return
+        if not sheet_id:
+            self.gdrive_status_label.configure(
+                text='No spreadsheet ID set', text_color='#ff6b6b'
+            )
+            return
+
+        try:
+            from google_drive import GoogleDriveExporter
+            exporter = GoogleDriveExporter(creds_path)
+            success, msg = exporter.test_connection(sheet_id)
+            if success:
+                self.gdrive_status_label.configure(
+                    text=msg, text_color='#4CAF50'
+                )
+            else:
+                self.gdrive_status_label.configure(
+                    text=msg, text_color='#ff6b6b'
+                )
+        except ImportError:
+            self.gdrive_status_label.configure(
+                text='Google API libraries not installed (pip install google-api-python-client google-auth)',
+                text_color='#ff6b6b'
+            )
+        except Exception as e:
+            self.gdrive_status_label.configure(
+                text=f'Error: {e}', text_color='#ff6b6b'
+            )
 
     def _create_backup(self):
         """Create a database backup."""

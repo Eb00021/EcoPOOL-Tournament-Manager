@@ -28,6 +28,9 @@
             <button id="manager-toggle" class="manager-toggle-btn" onclick="toggleManagerMode()">
                 🔧 Manager Mode
             </button>
+            <button class="manager-toggle-btn" onclick="openRulesModal()">
+                📖 Rules
+            </button>
             <a href="/stream" target="_blank" id="stream-link" class="manager-toggle-btn" style="text-decoration: none; display: none; align-items: center;">
                 📺 Stream View
             </a>
@@ -66,6 +69,73 @@
         </div>
     </div>
     
+    <!-- Rules Modal -->
+    <div class="modal-overlay" id="rules-modal">
+        <div class="modal-content" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
+            <span class="modal-close" onclick="closeRulesModal()" aria-label="Close">&times;</span>
+            <div style="padding: 10px 5px;">
+                <h2 style="text-align: center; margin-bottom: 5px; font-size: 1.4em;">WVU EcoPOOL League Ruleset</h2>
+                <p style="text-align: center; color: var(--text-secondary); font-size: 0.85em; margin-bottom: 20px;">Version 1</p>
+
+                <div class="rules-section">
+                    <h3 style="color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px;">General</h3>
+                    <ul style="line-height: 1.8; padding-left: 20px; font-size: 0.95em;">
+                        <li>League nights are held weekly. Players must RSVP before the deadline.</li>
+                        <li>There is a buy-in each week. Payment must be made before play begins.</li>
+                        <li>Format is <strong>2v2</strong> (doubles). Players are paired into teams of two.</li>
+                        <li>If there is an odd number of players, one person plays as a <strong>Lone Wolf</strong> (solo team). Lone wolves shoot every other turn (as if they had a partner).</li>
+                    </ul>
+                </div>
+
+                <div class="rules-section">
+                    <h3 style="color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px;">Gameplay</h3>
+                    <ul style="line-height: 1.8; padding-left: 20px; font-size: 0.95em;">
+                        <li>8-ball rules apply. Table is <strong>open</strong> after the break until a group is legally pocketed.</li>
+                        <li>The breaking team is determined before each game.</li>
+                        <li>If a ball is pocketed on the break, the breaker continues shooting but the table remains <strong>open</strong>.</li>
+                        <li>Teams alternate turns: Player A from Team 1, then Player A from Team 2, then Player B from Team 1, then Player B from Team 2, and so on.</li>
+                        <li>A team wins the game by legally pocketing the <strong>8-ball</strong> after clearing their group.</li>
+                    </ul>
+                </div>
+
+                <div class="rules-section">
+                    <h3 style="color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px;">Racking & Breaking</h3>
+                    <ul style="line-height: 1.8; padding-left: 20px; font-size: 0.95em;">
+                        <li>Standard 8-ball rack: 8-ball in the center, one solid and one stripe in the back corners. All other balls placed randomly.</li>
+                        <li>A valid break requires at least <strong>4 balls</strong> to hit a rail or be pocketed.</li>
+                        <li>If the break is not valid, the opposing team may re-rack and break, or accept the table as-is.</li>
+                        <li><strong>Scratch on the break:</strong> Opposing team gets ball-in-hand behind the head string.</li>
+                        <li>Pocketing the 8-ball on the break is a <strong>re-rack</strong> (same breaker breaks again).</li>
+                    </ul>
+                </div>
+
+                <div class="rules-section">
+                    <h3 style="color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px;">Scoring</h3>
+                    <ul style="line-height: 1.8; padding-left: 20px; font-size: 0.95em;">
+                        <li><strong>1 point</strong> per ball pocketed (both teams earn points for their own balls).</li>
+                        <li><strong>3 points</strong> for legally pocketing the 8-ball to win the game.</li>
+                        <li>Maximum of <strong>10 points</strong> per team per game (7 balls + 3 for the 8-ball).</li>
+                        <li><strong>Golden Break:</strong> Pocketing the 8-ball on the break = <strong>17 points</strong> (all 15 balls + 8-ball bonus, both teams' worth).</li>
+                        <li><strong>Early 8-ball</strong> (scratching on the 8 or pocketing it illegally): Opponent receives <strong>10 points</strong>.</li>
+                    </ul>
+                </div>
+
+                <div class="rules-section">
+                    <h3 style="color: var(--green); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px;">Fouls</h3>
+                    <ul style="line-height: 1.8; padding-left: 20px; font-size: 0.95em;">
+                        <li><strong>Ball-in-hand:</strong> Opponent may place the cue ball anywhere on the table after a foul.</li>
+                        <li><strong>Scratch:</strong> Cue ball pocketed = ball-in-hand for opponent.</li>
+                        <li>Hitting opponent's ball first (when table is not open) = foul.</li>
+                        <li>No rail contact after cue ball hits object ball = foul.</li>
+                        <li>At least one foot must remain on the ground during a shot.</li>
+                        <li><strong>Combo shots</strong> are allowed as long as you hit your own ball first.</li>
+                        <li>The 8-ball is <strong>not</strong> a neutral ball and should not be hit first unless it is your legal target.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Reaction bar -->
     <div class="reaction-bar">
         <div class="reaction-buttons">

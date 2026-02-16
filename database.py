@@ -286,9 +286,6 @@ class DatabaseManager:
                              ("round_number", "INTEGER DEFAULT 1")]:
             _safe_add_column(cursor, 'matches', col, default)
 
-        # Add current_turn column to games table if it doesn't exist (migration)
-        _safe_add_column(cursor, 'games', 'current_turn', "INTEGER DEFAULT 1")
-        
         # Games table (individual games within a match)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS games (
@@ -307,7 +304,10 @@ class DatabaseManager:
                 FOREIGN KEY (match_id) REFERENCES matches(id)
             )
         ''')
-        
+
+        # Add current_turn column to games table if it doesn't exist (migration)
+        _safe_add_column(cursor, 'games', 'current_turn', "INTEGER DEFAULT 1")
+
         # RSVP tracking
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS rsvps (
@@ -407,6 +407,14 @@ class DatabaseManager:
         conn.commit()
         return cursor.lastrowid
     
+    def find_player_by_name(self, name: str) -> Optional[int]:
+        """Find an active player by name. Returns player ID or None."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM players WHERE name = ? AND active = 1", (name,))
+        row = cursor.fetchone()
+        return row['id'] if row else None
+
     def update_player(self, player_id: int, name: str, email: str = "", venmo: str = "",
                       profile_picture: str = None):
         """Update player information."""
@@ -580,7 +588,7 @@ class DatabaseManager:
         
         # Get all matches where player participated
         cursor.execute('''
-            SELECT m.*, g.team1_score, g.team2_score, g.winner_team, g.golden_break
+            SELECT m.*, g.team1_score, g.team2_score, g.winner_team, g.golden_break, g.breaking_team
             FROM matches m
             JOIN games g ON g.match_id = m.id
             WHERE (m.team1_player1_id = ? OR m.team1_player2_id = ? 
@@ -1024,10 +1032,26 @@ class DatabaseManager:
                 )
             ''')
             cursor.execute("DELETE FROM matches WHERE is_complete = 0")
-            # Clear only current league night's buy-ins and pairs
-            cursor.execute("DELETE FROM league_night_buyins")
-            cursor.execute("DELETE FROM league_night_pairs")
-            cursor.execute("DELETE FROM league_nights")
+            # Only delete league nights that have no remaining completed matches
+            cursor.execute('''
+                DELETE FROM league_night_buyins WHERE league_night_id IN (
+                    SELECT id FROM league_nights WHERE id NOT IN (
+                        SELECT DISTINCT league_night_id FROM matches WHERE is_complete = 1
+                    )
+                )
+            ''')
+            cursor.execute('''
+                DELETE FROM league_night_pairs WHERE league_night_id IN (
+                    SELECT id FROM league_nights WHERE id NOT IN (
+                        SELECT DISTINCT league_night_id FROM matches WHERE is_complete = 1
+                    )
+                )
+            ''')
+            cursor.execute('''
+                DELETE FROM league_nights WHERE id NOT IN (
+                    SELECT DISTINCT league_night_id FROM matches WHERE is_complete = 1
+                )
+            ''')
         else:
             # Full clear - also clears leaderboard
             cursor.execute("DELETE FROM games")
@@ -1043,11 +1067,13 @@ class DatabaseManager:
         This is a destructive operation - use with caution."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        cursor.execute("DELETE FROM match_events")
         cursor.execute("DELETE FROM games")
         cursor.execute("DELETE FROM matches")
         cursor.execute("DELETE FROM league_night_buyins")
         cursor.execute("DELETE FROM league_night_pairs")
         cursor.execute("DELETE FROM league_nights")
+        cursor.execute("DELETE FROM teammate_pairs")
         conn.commit()
     
     def clear_all_players(self):
@@ -1497,28 +1523,65 @@ class DatabaseManager:
     
     def get_next_available_match(self, league_night_id: int) -> Optional[dict]:
         """Get the next queued match where neither pair is currently playing.
-        Only returns matches from the current round - never jumps to future rounds."""
+        Only returns matches from the current round - never jumps to future rounds.
+        Prefers matches whose teams have been idle longest."""
         queued_matches = self.get_queued_matches_for_current_round(league_night_id)
         current_round = self.get_current_round(league_night_id)
-        
+
         if not queued_matches or current_round == 0:
             return None
-        
+
         # Get ALL pairs currently playing live (not just in this round, but anywhere)
         playing_pairs = self.get_all_pairs_currently_playing(league_night_id)
-        
+
+        # Get last completed time for each pair to prefer idle teams
+        pair_last_active = self._get_pair_last_active_times(league_night_id)
+
+        available = []
         for match in queued_matches:
             # Only allow matches from the current round
             if match.get('round_number', 1) != current_round:
                 continue
-                
+
             pair1_available = match['pair1_id'] not in playing_pairs if match['pair1_id'] else True
             pair2_available = match['pair2_id'] not in playing_pairs if match['pair2_id'] else True
-            
+
             if pair1_available and pair2_available:
-                return match
-        
-        return None
+                # Score by idle time: prefer pairs that finished longest ago
+                p1_last = pair_last_active.get(match.get('pair1_id'), '')
+                p2_last = pair_last_active.get(match.get('pair2_id'), '')
+                # Earlier last-active = more idle = should go first
+                idle_key = max(p1_last, p2_last) if p1_last and p2_last else ''
+                available.append((idle_key, match))
+
+        if not available:
+            return None
+
+        # Sort so the match with the earliest last-active time comes first
+        available.sort(key=lambda x: x[0])
+        return available[0][1]
+
+    def _get_pair_last_active_times(self, league_night_id: int) -> dict:
+        """Get the last time each pair was in a completed or live match."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Use the match date as a proxy for when the pair was last active
+        cursor.execute('''
+            SELECT pair1_id, pair2_id, date
+            FROM matches
+            WHERE league_night_id = ? AND status IN ('completed', 'live')
+        ''', (league_night_id,))
+
+        result = {}
+        for row in cursor.fetchall():
+            ts = row['date'] or ''
+            if row['pair1_id']:
+                if ts > result.get(row['pair1_id'], ''):
+                    result[row['pair1_id']] = ts
+            if row['pair2_id']:
+                if ts > result.get(row['pair2_id'], ''):
+                    result[row['pair2_id']] = ts
+        return result
     
     def get_all_pairs_currently_playing(self, league_night_id: int) -> set[int]:
         """Get all pair IDs that are currently playing (live) in ANY match.

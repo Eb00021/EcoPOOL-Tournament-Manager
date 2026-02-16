@@ -733,21 +733,21 @@ class LiveScoreServer:
                     is_adding_or_changing = True  # Adding or changing ball assignment
                 
                 # AUTO-ASSIGN GROUP: If no group assigned yet and a non-8 ball is pocketed
-                # The BREAKING TEAM gets the group based on what ball type is pocketed first
+                # The POCKETING TEAM claims the group of the first ball type pocketed
                 if not team1_group and ball_str != '8' and team in [1, 2]:
                     if ball_str in SOLIDS:
-                        # A solid was pocketed - breaking team gets solids
-                        if breaking_team == 1:
+                        # A solid was pocketed - pocketing team gets solids
+                        if team == 1:
                             team1_group = 'solids'
                         else:
-                            team1_group = 'stripes'  # Breaking team (2) gets solids, so Team 1 gets stripes
+                            team1_group = 'stripes'  # Team 2 gets solids, so Team 1 gets stripes
                         group_changed = True
                     elif ball_str in STRIPES:
-                        # A stripe was pocketed - breaking team gets stripes
-                        if breaking_team == 1:
+                        # A stripe was pocketed - pocketing team gets stripes
+                        if team == 1:
                             team1_group = 'stripes'
                         else:
-                            team1_group = 'solids'  # Breaking team (2) gets stripes, so Team 1 gets solids
+                            team1_group = 'solids'  # Team 2 gets stripes, so Team 1 gets solids
                         group_changed = True
                 
                 # Calculate scores based on group assignment
@@ -886,9 +886,11 @@ class LiveScoreServer:
                     winning_team = 2 if illegal_8ball_losing_team == 1 else 1
                     cursor.execute('''
                         UPDATE games
-                        SET early_8ball_team = ?, winner_team = ?
+                        SET early_8ball_team = ?, winner_team = ?,
+                            team1_score = CASE WHEN ? = 1 THEN 10 ELSE team1_score END,
+                            team2_score = CASE WHEN ? = 2 THEN 10 ELSE team2_score END
                         WHERE id = ?
-                    ''', (illegal_8ball_losing_team, winning_team, current_game['id']))
+                    ''', (illegal_8ball_losing_team, winning_team, winning_team, winning_team, current_game['id']))
                     conn.commit()
 
                     # Log early 8-ball event
@@ -906,7 +908,7 @@ class LiveScoreServer:
                     team2_wins = sum(1 for g in games if g.get('winner_team') == 2)
 
                     if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
-                        cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                        cursor.execute("UPDATE matches SET is_complete = 1, status = 'completed' WHERE id = ?", (match_id,))
                         conn.commit()
 
                     # Notify update
@@ -1045,7 +1047,7 @@ class LiveScoreServer:
                     ''', (winning_team, json.dumps(balls), team1_score, team2_score, current_game['id']))
                 else:
                     # Only update winner_team and balls_pocketed (if 8-ball was added)
-                    if '8' not in str(balls_data):
+                    if '8' not in balls_data:
                         cursor.execute('''
                             UPDATE games 
                             SET winner_team = ?, balls_pocketed = ?
@@ -1068,7 +1070,7 @@ class LiveScoreServer:
                 
                 match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
-                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    cursor.execute("UPDATE matches SET is_complete = 1, status = 'completed' WHERE id = ?", (match_id,))
                     conn.commit()
                     match_complete = True
 
@@ -1120,9 +1122,9 @@ class LiveScoreServer:
                 except (ValueError, TypeError):
                     return jsonify({'success': False, 'error': 'Scores must be integers'}), 400
 
-                # Cap scores at 10 per team
-                team1_score = min(max(team1_score, 0), 10)
-                team2_score = min(max(team2_score, 0), 10)
+                # Cap scores at 17 per team (17 possible with golden break)
+                team1_score = min(max(team1_score, 0), 17)
+                team2_score = min(max(team2_score, 0), 17)
 
                 db = self._get_thread_db()
                 if db is None:
@@ -1337,7 +1339,7 @@ class LiveScoreServer:
                     UPDATE games 
                     SET golden_break = 1, winner_team = ?, team1_score = ?, team2_score = ?
                     WHERE id = ?
-                ''', (winning_team, 10 if winning_team == 1 else 0, 10 if winning_team == 2 else 0, current_game['id']))
+                ''', (winning_team, 17 if winning_team == 1 else 0, 17 if winning_team == 2 else 0, current_game['id']))
                 conn.commit()
                 
                 # Check if match is complete
@@ -1349,7 +1351,7 @@ class LiveScoreServer:
                 
                 match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
-                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    cursor.execute("UPDATE matches SET is_complete = 1, status = 'completed' WHERE id = ?", (match_id,))
                     conn.commit()
                     match_complete = True
 
@@ -1402,13 +1404,16 @@ class LiveScoreServer:
                 winning_team = 2 if losing_team == 1 else 1
                 
                 # Update game - early 8ball gives the win to the other team
+                # Winner gets 10 points per ruleset
                 conn = db.get_connection()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    UPDATE games 
-                    SET early_8ball_team = ?, winner_team = ?
+                    UPDATE games
+                    SET early_8ball_team = ?, winner_team = ?,
+                        team1_score = CASE WHEN ? = 1 THEN 10 ELSE team1_score END,
+                        team2_score = CASE WHEN ? = 2 THEN 10 ELSE team2_score END
                     WHERE id = ?
-                ''', (losing_team, winning_team, current_game['id']))
+                ''', (losing_team, winning_team, winning_team, winning_team, current_game['id']))
                 conn.commit()
                 
                 # Check if match is complete
@@ -1420,7 +1425,7 @@ class LiveScoreServer:
                 
                 match_complete = False
                 if team1_wins >= (best_of // 2 + 1) or team2_wins >= (best_of // 2 + 1):
-                    cursor.execute('UPDATE matches SET is_complete = 1 WHERE id = ?', (match_id,))
+                    cursor.execute("UPDATE matches SET is_complete = 1, status = 'completed' WHERE id = ?", (match_id,))
                     conn.commit()
                     match_complete = True
 
@@ -1488,6 +1493,101 @@ class LiveScoreServer:
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)}), 500
         
+        @self.app.route('/api/manager/revert-game', methods=['POST'])
+        def revert_game():
+            """Revert a completed game so it can be replayed."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                game_number = data.get('game_number')
+                session_token = data.get('session_token')
+
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+
+                games = db.get_games_for_match(match_id)
+                current_game = None
+                for g in games:
+                    if g['game_number'] == game_number:
+                        current_game = g
+                        break
+
+                if not current_game:
+                    return jsonify({'success': False, 'error': 'Game not found'})
+
+                conn = db.get_connection()
+                cursor = conn.cursor()
+
+                # Reset the game to active state
+                cursor.execute('''
+                    UPDATE games
+                    SET team1_score = 0, team2_score = 0, balls_pocketed = '{}',
+                        team1_group = '', winner_team = 0, golden_break = 0,
+                        early_8ball_team = NULL
+                    WHERE id = ?
+                ''', (current_game['id'],))
+
+                # Delete any games after this one (auto-created next games)
+                cursor.execute('''
+                    DELETE FROM games
+                    WHERE match_id = ? AND game_number > ?
+                ''', (match_id, game_number))
+
+                # Revert match completion if it was complete
+                cursor.execute('''
+                    UPDATE matches SET is_complete = 0, status = 'live'
+                    WHERE id = ?
+                ''', (match_id,))
+
+                # Clear match events for this game
+                cursor.execute('''
+                    DELETE FROM match_events
+                    WHERE match_id = ? AND game_number = ?
+                ''', (match_id, game_number))
+
+                conn.commit()
+
+                self.notify_update()
+                return jsonify({'success': True})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+
+        @self.app.route('/api/manager/revert-match-completion', methods=['POST'])
+        def revert_match_completion():
+            """Reopen a completed match back to live status."""
+            try:
+                data = request.get_json()
+                match_id = data.get('match_id')
+                session_token = data.get('session_token')
+
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE matches SET is_complete = 0, status = 'live'
+                    WHERE id = ?
+                ''', (match_id,))
+                conn.commit()
+
+                self.notify_update()
+                return jsonify({'success': True})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+
         @self.app.route('/api/manager/available-tables', methods=['GET'])
         def get_available_tables():
             """Get list of available tables (not currently running a live match)."""
@@ -2089,6 +2189,173 @@ class LiveScoreServer:
                     'venmo_deep_link': venmo_deep_link,
                     'venmo_link': venmo_web_link,
                     'message': 'Venmo link generated - will open on your device'
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+
+        # Google Sheet Update endpoint
+        @self.app.route('/api/manager/update-google-sheet', methods=['POST'])
+        def update_google_sheet():
+            """Push current league night scores to Google Sheets."""
+            try:
+                data = request.get_json()
+                session_token = data.get('session_token', '')
+
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+
+                creds_path = db.get_setting('google_credentials_path', '')
+                spreadsheet_id = db.get_setting('google_spreadsheet_id', '')
+
+                if not creds_path or not spreadsheet_id:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Google Drive not configured. Set credentials and spreadsheet ID in Settings.'
+                    })
+
+                league_night = db.get_current_league_night()
+                if not league_night:
+                    return jsonify({'success': False, 'error': 'No active league night'})
+
+                ln_id = league_night['id']
+                pairs = db.get_pairs_for_night(ln_id)
+                if not pairs:
+                    return jsonify({'success': False, 'error': 'No pairs found for current league night'})
+
+                # Build participants list from pairs
+                participants = []
+                seen_player_ids = set()
+                for pair in pairs:
+                    for key_prefix in ('player1', 'player2'):
+                        pid = pair.get(f'{key_prefix}_id')
+                        if pid and pid not in seen_player_ids:
+                            seen_player_ids.add(pid)
+                            name = pair.get(f'{key_prefix}_name', '')
+                            parts = name.split(' ', 1) if name else ['', '']
+                            first = parts[0]
+                            last = parts[1] if len(parts) > 1 else ''
+                            player = db.get_player(pid)
+                            participants.append({
+                                'first': first,
+                                'last': last,
+                                'email': player.email if player else '',
+                                'buyin_paid': False
+                            })
+
+                # Build pairs_data with per-match scores
+                # Get all matches for this league night
+                conn = db.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM matches WHERE league_night_id = ? ORDER BY round_number, id",
+                    (ln_id,)
+                )
+                matches = [dict(row) for row in cursor.fetchall()]
+
+                match_ids = [m['id'] for m in matches]
+                all_games = db.get_games_for_matches(match_ids) if match_ids else {}
+
+                # Map pair_id -> list of per-match scores
+                pair_scores = {}  # pair_id -> [score1, score2, ...]
+                pair_wins = {}
+                pair_losses = {}
+                for m in matches:
+                    games = all_games.get(m['id'], [])
+                    t1_total = sum(g.get('team1_score', 0) or 0 for g in games)
+                    t2_total = sum(g.get('team2_score', 0) or 0 for g in games)
+
+                    p1_id = m.get('pair1_id')
+                    p2_id = m.get('pair2_id')
+
+                    if p1_id:
+                        pair_scores.setdefault(p1_id, []).append(t1_total)
+                        pair_wins.setdefault(p1_id, 0)
+                        pair_losses.setdefault(p1_id, 0)
+                        if m.get('is_complete'):
+                            if t1_total > t2_total:
+                                pair_wins[p1_id] = pair_wins.get(p1_id, 0) + 1
+                            elif t2_total > t1_total:
+                                pair_losses[p1_id] = pair_losses.get(p1_id, 0) + 1
+
+                    if p2_id:
+                        pair_scores.setdefault(p2_id, []).append(t2_total)
+                        pair_wins.setdefault(p2_id, 0)
+                        pair_losses.setdefault(p2_id, 0)
+                        if m.get('is_complete'):
+                            if t2_total > t1_total:
+                                pair_wins[p2_id] = pair_wins.get(p2_id, 0) + 1
+                            elif t1_total > t2_total:
+                                pair_losses[p2_id] = pair_losses.get(p2_id, 0) + 1
+
+                pairs_export = []
+                for i, pair in enumerate(pairs, 1):
+                    p1_name = pair.get('player1_name', '')
+                    p2_name = pair.get('player2_name', '')
+                    p1_parts = p1_name.split(' ', 1) if p1_name else ['', '']
+                    p2_parts = p2_name.split(' ', 1) if p2_name else ['', '']
+
+                    pid = pair['id']
+                    scores = pair_scores.get(pid, [])
+                    total = sum(s for s in scores if s)
+                    wins = pair_wins.get(pid, 0)
+                    losses = pair_losses.get(pid, 0)
+
+                    pairs_export.append({
+                        'team_num': i,
+                        'player1_first': p1_parts[0],
+                        'player1_last': p1_parts[1] if len(p1_parts) > 1 else '',
+                        'player2_first': p2_parts[0],
+                        'player2_last': p2_parts[1] if len(p2_parts) > 1 else '',
+                        'scores': scores,
+                        'total': total,
+                        'wins': wins,
+                        'losses': losses,
+                    })
+
+                # Build matchups grouped by round
+                pair_id_to_team = {pair['id']: i for i, pair in enumerate(pairs, 1)}
+                matchups_export = []
+                for m in matches:
+                    p1_id = m.get('pair1_id')
+                    p2_id = m.get('pair2_id')
+                    matchups_export.append({
+                        'set_num': m.get('round_number', 1),
+                        'team1_num': pair_id_to_team.get(p1_id, ''),
+                        'team2_num': pair_id_to_team.get(p2_id, ''),
+                    })
+
+                # Determine week name
+                notes = league_night.get('notes', '')
+                if notes:
+                    week_name = notes
+                else:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM league_nights WHERE id <= ?",
+                        (ln_id,)
+                    )
+                    week_num = cursor.fetchone()[0]
+                    date_str = league_night.get('date', '')
+                    week_name = f"Week {week_num}" + (f" ({date_str})" if date_str else '')
+
+                from google_drive import GoogleDriveExporter
+                exporter = GoogleDriveExporter(creds_path)
+                exporter.upload_week_data(
+                    spreadsheet_id, week_name,
+                    participants, pairs_export, matchups_export
+                )
+
+                return jsonify({'success': True})
+
+            except ImportError as e:
+                return jsonify({
+                    'success': False,
+                    'error': 'Google API libraries not installed. Run: pip install google-api-python-client google-auth'
                 })
             except Exception as e:
                 import traceback

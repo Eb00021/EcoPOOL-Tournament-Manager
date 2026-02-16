@@ -363,7 +363,19 @@ class MatchGeneratorView(ctk.CTkFrame):
             state="disabled"
         )
         self.export_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
+
+        self.upload_drive_btn = ctk.CTkButton(
+            btn_frame,
+            text="Upload to Drive",
+            font=get_font(12),
+            height=35,
+            fg_color="#1a73e8",
+            hover_color="#1557b0",
+            command=self.upload_to_google_drive,
+            state="disabled"
+        )
+        self.upload_drive_btn.pack(side="left", fill="x", expand=True, padx=5)
+
         self.clear_btn = ctk.CTkButton(
             btn_frame,
             text="Clear",
@@ -791,6 +803,7 @@ class MatchGeneratorView(ctk.CTkFrame):
         
         # Enable action buttons
         self.export_btn.configure(state="normal")
+        self.upload_drive_btn.configure(state="normal")
         self.clear_btn.configure(state="normal")
         self.create_matches_btn.configure(state="normal")
         
@@ -868,6 +881,7 @@ class MatchGeneratorView(ctk.CTkFrame):
                 
                 # Enable action buttons
                 self.export_btn.configure(state="normal")
+                self.upload_drive_btn.configure(state="normal")
                 self.clear_btn.configure(state="normal")
                 self.create_matches_btn.configure(state="normal")
         except Exception as e:
@@ -1008,6 +1022,7 @@ class MatchGeneratorView(ctk.CTkFrame):
             self.generated_schedule = None
             self._display_empty_schedule()
             self.export_btn.configure(state="disabled")
+            self.upload_drive_btn.configure(state="disabled")
             self.clear_btn.configure(state="disabled")
             self.create_matches_btn.configure(state="disabled")
             
@@ -1079,6 +1094,96 @@ class MatchGeneratorView(ctk.CTkFrame):
             else:
                 messagebox.showerror("Error", "Failed to export schedule.")
     
+    def upload_to_google_drive(self):
+        """Upload the current schedule to Google Sheets."""
+        if not self.generated_schedule:
+            return
+
+        creds_path = self.db.get_setting('google_credentials_path', '')
+        sheet_id = self.db.get_setting('google_spreadsheet_id', '')
+
+        if not creds_path or not sheet_id:
+            messagebox.showerror(
+                "Not Configured",
+                "Google Drive is not configured.\n\n"
+                "Go to Settings and set the service account credentials file "
+                "and spreadsheet ID."
+            )
+            return
+
+        # Prompt for week name
+        from tkinter import simpledialog
+        week_name = simpledialog.askstring(
+            "Week Name",
+            "Enter the sheet tab name (e.g. 'Week 1 (1/29)'):",
+            initialvalue=f"Week {datetime.now().strftime('%m/%d')}"
+        )
+        if not week_name:
+            return
+
+        try:
+            from google_drive import GoogleDriveExporter
+
+            pair_names = self.generator.get_pair_display_names(self.current_pairs)
+
+            # Build participants
+            participants = []
+            seen = set()
+            for p1_id, p2_id in self.current_pairs:
+                for pid in (p1_id, p2_id):
+                    if pid and pid not in seen:
+                        seen.add(pid)
+                        player = self.db.get_player(pid)
+                        if player:
+                            parts = player.name.split(' ', 1)
+                            participants.append({
+                                'first': parts[0],
+                                'last': parts[1] if len(parts) > 1 else '',
+                                'email': player.email or '',
+                                'buyin_paid': self.buyins_paid.get(pid, False),
+                            })
+
+            # Build pairs_data
+            pairs_data = []
+            for i, (p1_id, p2_id) in enumerate(self.current_pairs, 1):
+                p1 = self.db.get_player(p1_id) if p1_id else None
+                p2 = self.db.get_player(p2_id) if p2_id else None
+                p1_parts = (p1.name.split(' ', 1) if p1 else ['', ''])
+                p2_parts = (p2.name.split(' ', 1) if p2 else ['', ''])
+                pairs_data.append({
+                    'team_num': i,
+                    'player1_first': p1_parts[0],
+                    'player1_last': p1_parts[1] if len(p1_parts) > 1 else '',
+                    'player2_first': p2_parts[0],
+                    'player2_last': p2_parts[1] if len(p2_parts) > 1 else '',
+                    'scores': [],
+                    'total': '',
+                    'wins': '',
+                    'losses': '',
+                })
+
+            # Build matchups
+            matchups = []
+            for match in self.generated_schedule.get('matches', []):
+                matchups.append({
+                    'set_num': match.get('round_number', 1),
+                    'team1_num': match['pair1_idx'] + 1,
+                    'team2_num': match['pair2_idx'] + 1,
+                })
+
+            exporter = GoogleDriveExporter(creds_path)
+            exporter.upload_week_data(sheet_id, week_name, participants, pairs_data, matchups)
+            messagebox.showinfo("Success", f"Schedule uploaded to Google Sheets\nSheet: {week_name}")
+
+        except ImportError:
+            messagebox.showerror(
+                "Missing Libraries",
+                "Google API libraries not installed.\n\n"
+                "Run: pip install google-api-python-client google-auth"
+            )
+        except Exception as e:
+            messagebox.showerror("Upload Failed", f"Error uploading to Google Sheets:\n{e}")
+
     def create_all_matches(self):
         """Create all matches in the database."""
         if not self.generated_schedule:
@@ -1176,6 +1281,7 @@ class MatchGeneratorView(ctk.CTkFrame):
         
         # Disable buttons
         self.export_btn.configure(state="disabled")
+        self.upload_drive_btn.configure(state="disabled")
         self.clear_btn.configure(state="disabled")
         self.create_matches_btn.configure(state="disabled")
         self.generate_btn.configure(state="disabled")

@@ -745,7 +745,8 @@ class Exporter:
                     elements.append(Spacer(1, 20))
                 
                 # Matches section
-                elements.append(Paragraph("Matches (Best of 1)", self.subtitle_style))
+                best_of = pairings_data.get('best_of', 3)
+                elements.append(Paragraph(f"Matches (Best of {best_of})", self.subtitle_style))
                 
                 if pairings_data.get('has_repeats', False):
                     elements.append(Paragraph(

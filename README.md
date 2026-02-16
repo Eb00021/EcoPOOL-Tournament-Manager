@@ -83,9 +83,22 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Season selector**: View payment data by season or across all seasons
 - **Auto-season creation**: Automatically creates a season if none exists when starting games
 
+### 📖 Rules Viewer
+- **Mobile-friendly rules modal** accessible from the header on the live scores page
+- Complete WVU EcoPOOL League Ruleset covering General, Gameplay, Racking & Breaking, Scoring, and Fouls
+- Scrollable, large-text sections styled for phone screens
+
+### 📊 Google Drive Integration
+- **Upload weekly data to Google Sheets** via service account authentication
+- **Match Generator**: "Upload to Drive" button pushes pairs and matchups to a new week sheet after generating a schedule
+- **Manager Mode**: "Update Google Sheet" button pushes current scores to the spreadsheet during or after league night
+- **Settings**: Configure service account credentials file and spreadsheet ID with a test connection button
+- Sheet format matches the master Excel scoresheet (participants, partners with per-match scores, matchups by round)
+
 ### ⚙️ Settings
 - **Manager Password**: Set password for web manager mode access
 - **Venmo Settings**: Configure organizer Venmo username and default buy-in
+- **Google Drive**: Configure service account credentials and spreadsheet ID for Google Sheets sync
 - **Data Management**: Create/restore backups, auto-backup on exit
 - Open data folder for direct database access
 
@@ -203,6 +216,47 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### Google Drive Setup (Optional)
+
+To enable uploading weekly scores to Google Sheets:
+
+1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com)
+
+2. **Enable the Google Sheets API**:
+   - Go to APIs & Services → Library
+   - Search for "Google Sheets API" and click Enable
+
+3. **Create a service account**:
+   - Go to APIs & Services → Credentials
+   - Click "Create Credentials" → "Service Account"
+   - Give it a name (e.g. "ecopool-sheets") and click Create
+   - Skip the optional permissions steps
+
+4. **Download the credentials JSON**:
+   - Click the service account you just created
+   - Go to Keys → Add Key → Create New Key → JSON
+   - Save the downloaded `.json` file somewhere safe
+
+5. **Share your spreadsheet with the service account**:
+   - Open the `.json` file and copy the `client_email` value (looks like `name@project.iam.gserviceaccount.com`)
+   - Open your Google Sheets spreadsheet
+   - Click Share and add the service account email as an Editor
+
+6. **Get your spreadsheet ID**:
+   - The ID is in the spreadsheet URL: `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
+   - Copy the part between `/d/` and `/edit`
+
+7. **Install the Google API libraries**:
+```bash
+pip install google-api-python-client google-auth
+```
+
+8. **Configure in the app**:
+   - Go to Settings → Google Drive
+   - Browse for the credentials JSON file
+   - Paste the spreadsheet ID and click Save
+   - Click "Test Connection" to verify it works
+
 ## Usage
 
 ### First Time Setup
@@ -238,6 +292,8 @@ EcoPOOL Toolkit/
 ├── match_generator.py      # Pair and round-based schedule generation
 ├── exporter.py             # PDF, CSV, JSON export/import
 ├── web_server.py           # Live scores Flask server (SSE, QR, mobile manager mode)
+├── google_drive.py         # Google Sheets API integration (service account)
+├── excel_importer.py       # Excel workbook import (players, pairs, scores)
 ├── animations.py           # Animated cards, buttons, celebrations
 ├── fonts.py                # Custom fonts
 ├── profile_pictures.py     # Profile picture handling
@@ -321,6 +377,8 @@ SQLite (`ecopool_league.db`) is created on first run. Main tables:
 - **flask** — Live scores web server
 - **qrcode[pil]** — QR code for mobile access to live scores
 - **pyngrok** — Public URL tunneling for remote access
+- **google-api-python-client** — Google Sheets API (optional, for Drive sync)
+- **google-auth** — Google service account authentication (optional, for Drive sync)
 
 ## Contributing
 

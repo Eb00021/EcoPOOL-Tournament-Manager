@@ -217,8 +217,12 @@ class MatchGenerator:
         # Generate rounds - each round ensures no pair plays twice
         rounds = []
         total_matchups_used = set()
+        # Track when each pair last played to minimize idle time
+        last_round_played = {i: 0 for i in range(len(pairs))}
+        current_round_num = 0
 
         while min(games_per_pair.values()) < min_games_per_pair:
+            current_round_num += 1
             # Generate one round
             round_matches = []
             pairs_used_this_round = set()
@@ -244,8 +248,13 @@ class MatchGenerator:
                 need_score = (min_games_per_pair - games_per_pair[p1_idx]) + \
                             (min_games_per_pair - games_per_pair[p2_idx])
 
-                # Score: lower is better (less repeats, more need)
-                score = historical_count + (tonight_count * 10) - need_score
+                # Idle penalty: prefer pairs that have been sitting out
+                idle_rounds_p1 = current_round_num - last_round_played[p1_idx]
+                idle_rounds_p2 = current_round_num - last_round_played[p2_idx]
+                idle_penalty = -(idle_rounds_p1 + idle_rounds_p2) * 5
+
+                # Score: lower is better (less repeats, more need, more idle)
+                score = historical_count + (tonight_count * 10) - need_score + idle_penalty
 
                 available_matchups.append((p1_idx, p2_idx, score))
 
@@ -274,6 +283,11 @@ class MatchGenerator:
                 pair2 = pairs[p2_idx]
                 matchup_key = self._create_matchup_key(pair1, pair2)
                 tonight_matchups[matchup_key] = tonight_matchups.get(matchup_key, 0) + 1
+
+            # Update last_round_played for pairs in this round
+            for p1_idx, p2_idx in round_matches:
+                last_round_played[p1_idx] = current_round_num
+                last_round_played[p2_idx] = current_round_num
 
             if not round_matches:
                 # No more matches possible without repeats, allow repeats
