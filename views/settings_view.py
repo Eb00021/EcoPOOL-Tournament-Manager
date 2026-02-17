@@ -402,6 +402,91 @@ class SettingsView(ctk.CTkFrame):
             text_color='#666666'
         ).pack(anchor='w', pady=(5, 0))
 
+        # ========== AI Team Names Section ==========
+        self._create_section(content, 'AI Team Names')
+
+        ai_card = ctk.CTkFrame(content, fg_color='#252540', corner_radius=15)
+        ai_card.pack(fill='x', pady=10)
+
+        ai_inner = ctk.CTkFrame(ai_card, fg_color='transparent')
+        ai_inner.pack(fill='x', padx=20, pady=15)
+
+        ctk.CTkLabel(
+            ai_inner,
+            text='Claude AI Team Names',
+            font=get_font(14, 'bold')
+        ).pack(anchor='w')
+
+        ctk.CTkLabel(
+            ai_inner,
+            text='Generate creative pool-themed team names for each pair using Claude AI',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        # Enable toggle
+        ai_toggle_row = ctk.CTkFrame(ai_inner, fg_color='transparent')
+        ai_toggle_row.pack(fill='x', pady=10)
+
+        ctk.CTkLabel(
+            ai_toggle_row,
+            text='Enable AI team names',
+            font=get_font(12)
+        ).pack(side='left')
+
+        ai_enabled = self.db.get_setting('ai_names_enabled', 'false') == 'true'
+        self.ai_names_enabled_var = ctk.BooleanVar(value=ai_enabled)
+
+        ctk.CTkSwitch(
+            ai_toggle_row,
+            text='',
+            variable=self.ai_names_enabled_var,
+            command=self._save_ai_names_enabled,
+            fg_color='#333333',
+            progress_color='#4CAF50'
+        ).pack(side='right')
+
+        # API key field
+        ctk.CTkLabel(
+            ai_inner,
+            text='Anthropic API Key',
+            font=get_font(13, 'bold')
+        ).pack(anchor='w', pady=(10, 5))
+
+        ctk.CTkLabel(
+            ai_inner,
+            text='Get your API key at console.anthropic.com',
+            font=get_font(11),
+            text_color='#888888'
+        ).pack(anchor='w')
+
+        ai_key_row = ctk.CTkFrame(ai_inner, fg_color='transparent')
+        ai_key_row.pack(fill='x', pady=10)
+
+        saved_key = self.db.get_setting('anthropic_api_key', '')
+        self.ai_api_key_var = ctk.StringVar(value=saved_key)
+
+        ctk.CTkEntry(
+            ai_key_row,
+            textvariable=self.ai_api_key_var,
+            height=40,
+            width=280,
+            font=get_font(14),
+            placeholder_text='sk-ant-...',
+            show='*'
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            ai_key_row,
+            text='Save Key',
+            font=get_font(12),
+            fg_color='#4CAF50',
+            hover_color='#388E3C',
+            height=40,
+            width=100,
+            command=self._save_ai_api_key
+        ).pack(side='left')
+
         # ========== Google Drive Section ==========
         self._create_section(content, 'Google Drive')
 
@@ -1060,6 +1145,20 @@ class SettingsView(ctk.CTkFrame):
                 )
         else:
             messagebox.showinfo("Cleared", "Static domain cleared")
+
+    def _save_ai_names_enabled(self):
+        """Save AI names enabled setting."""
+        enabled = self.ai_names_enabled_var.get()
+        self.db.set_setting('ai_names_enabled', str(enabled).lower())
+
+    def _save_ai_api_key(self):
+        """Save Anthropic API key."""
+        key = self.ai_api_key_var.get().strip()
+        self.db.set_setting('anthropic_api_key', key)
+        if key:
+            messagebox.showinfo("Saved", "Anthropic API key saved")
+        else:
+            messagebox.showinfo("Cleared", "Anthropic API key cleared")
 
     def _browse_gdrive_credentials(self):
         """Browse for Google service account JSON credentials file."""

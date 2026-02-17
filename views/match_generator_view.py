@@ -10,31 +10,40 @@ from database import DatabaseManager
 from match_generator import MatchGenerator
 from exporter import Exporter
 from fonts import get_font
+from pair_name_generator import PairNameGenerator
+from animations import AnimationManager
 
 
 class MatchGeneratorView(ctk.CTkFrame):
-    def __init__(self, parent, db: DatabaseManager, on_match_created=None, 
-                 on_pairings_changed=None, initial_pairings=None, initial_multi_round=False):
+    def __init__(self, parent, db: DatabaseManager, on_match_created=None,
+                 on_pairings_changed=None, initial_pairings=None, initial_multi_round=False,
+                 on_names_ready=None):
         super().__init__(parent, fg_color="transparent")
         self.db = db
         self.generator = MatchGenerator(db)
         self.exporter = Exporter(db)
         self.on_match_created = on_match_created
         self.on_pairings_changed = on_pairings_changed
-        
+        self.on_names_ready = on_names_ready
+
         self.selected_players = set()
         self.current_pairs = []  # List of (player1_id, player2_id) tuples
         self.generated_schedule = None
         self.current_league_night_id = None
         self.buyin_amount = 3.0
         self.buyins_paid = {}  # player_id -> bool
-        
+
+        # AI name generation state
+        self.pair_name_gen = PairNameGenerator(db)
+        self.current_pair_names = {}   # pair_idx -> name string
+        self._pair_name_labels = {}    # pair_idx -> CTkLabel widget
+
         # Manual pairing state
         self.manual_pair_selection = []  # For manual pairing mode
-        
+
         # Store initial state to restore after UI setup
         self._initial_state = initial_pairings
-        
+
         self.setup_ui()
         
         # Load persistent settings from database
@@ -399,7 +408,20 @@ class MatchGeneratorView(ctk.CTkFrame):
             command=self.create_all_matches,
             state="disabled"
         )
-        self.create_matches_btn.pack(fill="x", padx=15, pady=(0, 15))
+        self.create_matches_btn.pack(fill="x", padx=15, pady=(0, 5))
+
+        # Regenerate AI names button
+        self.regen_names_btn = ctk.CTkButton(
+            self.right_col,
+            text="Regenerate AI Names",
+            font=get_font(12),
+            height=35,
+            fg_color="#6b4e8a",
+            hover_color="#5b3e7a",
+            command=self._regenerate_names,
+            state="disabled"
+        )
+        self.regen_names_btn.pack(fill="x", padx=15, pady=(0, 15))
     
     def _adjust_table_count(self, delta: int):
         """Adjust the table count."""
@@ -668,7 +690,8 @@ class MatchGeneratorView(ctk.CTkFrame):
         """Update the pairs display."""
         for widget in self.pairs_scroll.winfo_children():
             widget.destroy()
-        
+        self._pair_name_labels.clear()
+
         if not self.current_pairs:
             ctk.CTkLabel(
                 self.pairs_scroll,
@@ -677,13 +700,13 @@ class MatchGeneratorView(ctk.CTkFrame):
                 text_color="#666666"
             ).pack(pady=20)
             return
-        
+
         pair_names = self.generator.get_pair_display_names(self.current_pairs)
-        
+
         for i, (pair, name) in enumerate(zip(self.current_pairs, pair_names)):
             pair_frame = ctk.CTkFrame(self.pairs_scroll, fg_color="#252540", corner_radius=8)
             pair_frame.pack(fill="x", pady=2)
-            
+
             # Pair letter (A, B, C, etc.)
             letter = chr(65 + i)  # A, B, C...
             ctk.CTkLabel(
@@ -693,12 +716,23 @@ class MatchGeneratorView(ctk.CTkFrame):
                 text_color="#4CAF50",
                 width=50
             ).pack(side="left", padx=10, pady=8)
-            
+
             ctk.CTkLabel(
                 pair_frame,
                 text=name,
                 font=get_font(12)
             ).pack(side="left", padx=5, pady=8)
+
+            # AI name badge (gold, initially empty or pre-filled if already generated)
+            ai_text = self.current_pair_names.get(i, "")
+            ai_label = ctk.CTkLabel(
+                pair_frame,
+                text=ai_text,
+                font=get_font(11, "bold"),
+                text_color="#ffd700"
+            )
+            ai_label.pack(side="right", padx=10, pady=8)
+            self._pair_name_labels[i] = ai_label
     
     def _update_buyins_display(self):
         """Update the buy-ins tracking display."""
@@ -1264,28 +1298,133 @@ class MatchGeneratorView(ctk.CTkFrame):
                 print(f"Error creating match: {e}")
         
         total_rounds = schedule.get('total_rounds', 1)
+
+        ai_enabled = self.db.get_setting("ai_names_enabled", "false") == "true"
+        ai_msg = "\n\nAI is generating team names — watch the pair cards light up!" if ai_enabled else ""
         messagebox.showinfo(
             "Success",
             f"Created {created} matches in {total_rounds} rounds!\n\n"
             f"League Night ID: {league_night_id}\n"
             f"Tables: {self.table_count_var.get()}\n\n"
             f"Rounds ensure no pair plays at multiple tables simultaneously.\n"
-            f"Go to Table Tracker to manage live games."
+            f"Go to Table Tracker to manage live games.{ai_msg}"
         )
-        
+
+        # Trigger AI name generation if enabled
+        if ai_enabled:
+            self._trigger_name_generation(pair_id_map)
+
+        # Enable regenerate button
+        self.regen_names_btn.configure(state="normal")
+
         # Clear state
         self.generated_schedule = None
         self.current_pairs = []
         self._display_empty_schedule()
         self._update_pairs_display()
-        
+
         # Disable buttons
         self.export_btn.configure(state="disabled")
         self.upload_drive_btn.configure(state="disabled")
         self.clear_btn.configure(state="disabled")
         self.create_matches_btn.configure(state="disabled")
         self.generate_btn.configure(state="disabled")
-        
+
         # Callback
         if self.on_match_created:
             self.on_match_created()
+
+    # ============ AI Name Generation ============
+
+    def _trigger_name_generation(self, pair_id_map: dict):
+        """Start background AI name generation for the current night's pairs."""
+        # pair_id_map: {pair_idx -> db pair_id}
+        # current_pairs was just cleared, so snapshot it from pair_id_map keys
+        # We need the player IDs; fetch from DB using pair_ids
+        pairs_for_gen = []
+        pair_db_ids = []
+        for idx in sorted(pair_id_map.keys()):
+            pair_id = pair_id_map[idx]
+            pair = self.db.get_pair(pair_id)
+            if pair:
+                pairs_for_gen.append((pair['player1_id'], pair['player2_id']))
+                pair_db_ids.append(pair_id)
+
+        if not pairs_for_gen:
+            return
+
+        def on_name_ready(pair_idx, name):
+            db_pair_id = pair_db_ids[pair_idx] if pair_idx < len(pair_db_ids) else None
+            if db_pair_id:
+                try:
+                    self.db.update_pair_name(db_pair_id, name)
+                except Exception:
+                    pass
+            self.current_pair_names[pair_idx] = name
+            self.after(0, lambda i=pair_idx, n=name: self._reveal_pair_name(i, n))
+
+        def on_complete():
+            self.after(0, self._on_all_names_generated)
+
+        self.pair_name_gen.generate_names_for_all_pairs(
+            pairs_for_gen,
+            on_name_ready=on_name_ready,
+            on_complete=on_complete,
+            use_threading=True
+        )
+
+    def _reveal_pair_name(self, pair_idx: int, name: str):
+        """Update the gold badge label for a pair and animate it."""
+        label = self._pair_name_labels.get(pair_idx)
+        if label and label.winfo_exists():
+            label.configure(text=name)
+            try:
+                AnimationManager.pulse(label, "#ffd700", "#ffaa00", duration=400, cycles=2)
+            except Exception:
+                pass
+
+    def _on_all_names_generated(self):
+        """Called when all AI names have been generated."""
+        self.stats_label.configure(text="AI team names are ready!", text_color="#ffd700")
+        if self.on_names_ready:
+            try:
+                self.on_names_ready()
+            except Exception:
+                pass
+
+    def _regenerate_names(self):
+        """Re-generate AI names for the current league night's pairs."""
+        league_night = self.db.get_current_league_night()
+        if not league_night:
+            messagebox.showinfo("No League Night", "No active league night found.")
+            return
+
+        pairs = self.db.get_pairs_for_night(league_night['id'])
+        if not pairs:
+            messagebox.showinfo("No Pairs", "No pairs found for the current league night.")
+            return
+
+        pairs_for_gen = [(p['player1_id'], p['player2_id']) for p in pairs]
+        pair_db_ids = [p['id'] for p in pairs]
+
+        def on_name_ready(pair_idx, name):
+            db_pair_id = pair_db_ids[pair_idx] if pair_idx < len(pair_db_ids) else None
+            if db_pair_id:
+                try:
+                    self.db.update_pair_name(db_pair_id, name)
+                except Exception:
+                    pass
+            self.current_pair_names[pair_idx] = name
+            self.after(0, lambda i=pair_idx, n=name: self._reveal_pair_name(i, n))
+
+        def on_complete():
+            self.after(0, self._on_all_names_generated)
+
+        self.pair_name_gen._client_initialized = False  # Reset client so key changes are picked up
+        self.pair_name_gen.generate_names_for_all_pairs(
+            pairs_for_gen,
+            on_name_ready=on_name_ready,
+            on_complete=on_complete,
+            use_threading=True
+        )
+        self.stats_label.configure(text="Generating AI team names...", text_color="#888888")

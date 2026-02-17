@@ -21,3 +21,6 @@ qrcode[pil]>=7.4.0
 
 # Public tunneling for remote access
 pyngrok>=7.0.0
+
+# AI team name generation (optional — falls back gracefully if not installed)
+anthropic>=0.25.0

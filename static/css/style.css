@@ -421,6 +421,19 @@
             border-bottom: 2px solid var(--wvu-gold);
         }
         
+        .ai-team-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #2d4a10, #4a7a1e);
+            color: #ffd700;
+            font-size: 0.75em;
+            font-weight: bold;
+            padding: 3px 10px;
+            border-radius: 20px;
+            margin-bottom: 4px;
+            border: 1px solid #5a9a2e;
+            text-shadow: 0 0 6px rgba(255,215,0,0.4);
+        }
+
         .queue-item {
             display: flex;
             align-items: center;

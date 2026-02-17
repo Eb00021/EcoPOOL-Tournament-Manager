@@ -479,11 +479,12 @@ class EcoPoolApp(ctk.CTk):
             view.pack(fill="both", expand=True)
         elif view_name == "generator":
             view = MatchGeneratorView(
-                self.content, self.db, 
+                self.content, self.db,
                 on_match_created=self.on_matches_created,
                 on_pairings_changed=self.on_pairings_changed,
                 initial_pairings=self.pending_pairings,
-                initial_multi_round=self.pending_pairings_multi_round
+                initial_multi_round=self.pending_pairings_multi_round,
+                on_names_ready=self.notify_scores_updated
             )
             view.pack(fill="both", expand=True)
         elif view_name == "scorecard":

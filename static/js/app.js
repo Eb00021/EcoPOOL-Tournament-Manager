@@ -648,21 +648,33 @@
         }
         
         function createQueueItem(item) {
+            const team1Badge = item.team1_ai_name
+                ? `<span class="ai-team-badge">${escapeHtml(item.team1_ai_name)}</span> `
+                : '';
+            const team2Badge = item.team2_ai_name
+                ? `<span class="ai-team-badge">${escapeHtml(item.team2_ai_name)}</span> `
+                : '';
             return `
                 <div class="queue-item">
                     <span class="queue-position">#${item.position}</span>
-                    <span class="queue-teams">${escapeHtml(item.team1)} vs ${escapeHtml(item.team2)}</span>
+                    <span class="queue-teams">${team1Badge}${escapeHtml(item.team1)} vs ${team2Badge}${escapeHtml(item.team2)}</span>
                     ${item.round > 1 ? `<span class="queue-round">R${item.round}</span>` : ''}
                 </div>
             `;
         }
-        
+
         function createMatchCard(match, completed) {
             const finals = match.is_finals ? 'finals' : '';
             const completedClass = completed ? 'completed' : '';
             // In manager mode, always allow clicking to open scorecard
             const clickHandler = `onclick="openScorecard(${match.id}, ${managerMode ? 'true' : 'false'})"`;
-            
+            const team1Badge = match.team1_ai_name
+                ? `<div class="ai-team-badge">${escapeHtml(match.team1_ai_name)}</div>`
+                : '';
+            const team2Badge = match.team2_ai_name
+                ? `<div class="ai-team-badge">${escapeHtml(match.team2_ai_name)}</div>`
+                : '';
+
             return `
                 <div class="match-card ${finals} ${completedClass}" ${clickHandler} style="cursor:pointer">
                     <div class="match-header">
@@ -671,6 +683,7 @@
                     </div>
                     <div class="teams-container">
                         <div class="team">
+                            ${team1Badge}
                             <div class="team-name"><span class="team-number-small team1-small">T1</span> ${escapeHtml(match.team1)}</div>
                             <div class="score-box">
                                 <div class="game-score">${match.team1_games}</div>
@@ -679,6 +692,7 @@
                         </div>
                         <div class="vs-divider">VS</div>
                         <div class="team">
+                            ${team2Badge}
                             <div class="team-name"><span class="team-number-small team2-small">T2</span> ${escapeHtml(match.team2)}</div>
                             <div class="score-box">
                                 <div class="game-score">${match.team2_games}</div>

@@ -427,7 +427,29 @@ class LiveScoreServer:
         def get_scores():
             """API endpoint for current scores."""
             return jsonify(self._get_scores_data())
-        
+
+        @self.app.route('/api/pairs')
+        def get_pairs():
+            """API endpoint for tonight's pairs with AI names."""
+            try:
+                db = self._get_thread_db()
+                league_night = db.get_current_league_night()
+                if not league_night:
+                    return jsonify({'pairs': []})
+                pairs = db.get_pairs_for_night(league_night['id'])
+                result = [
+                    {
+                        'id': p['id'],
+                        'player1_name': p.get('player1_name', ''),
+                        'player2_name': p.get('player2_name', ''),
+                        'pair_name': p.get('pair_name', ''),
+                    }
+                    for p in pairs
+                ]
+                return jsonify({'pairs': result})
+            except Exception as e:
+                return jsonify({'pairs': [], 'error': str(e)})
+
         @self.app.route('/api/match/<int:match_id>')
         def get_match_details(match_id):
             """API endpoint for detailed match/scorecard data."""
@@ -2424,25 +2446,34 @@ class LiveScoreServer:
             # Get all game data in one batch query
             match_ids = [m['id'] for m in matches]
             all_games = db.get_games_for_matches(match_ids) if match_ids else {}
-            
+
+            # Build pair name lookup for tonight's pairs
+            pair_name_lookup = {}
+            if league_night:
+                try:
+                    night_pairs = db.get_pairs_for_night(league_night['id'])
+                    pair_name_lookup = {p['id']: p.get('pair_name', '') for p in night_pairs}
+                except Exception:
+                    pass
+
             for match in matches:
-                match_data = self._format_match(match, all_games.get(match['id'], []))
-                
+                match_data = self._format_match(match, all_games.get(match['id'], []), pair_name_lookup)
+
                 if match['is_complete']:
                     completed_matches.append(match_data)
                 else:
                     live_matches.append(match_data)
-            
+
             # Get queue data
             queue_data = []
             current_round = 0
             total_rounds = 0
             round_progress = None
-            
+
             if league_night:
                 queued_matches = db.get_queued_matches(league_night['id'])
                 for i, match in enumerate(queued_matches):
-                    queue_data.append(self._format_queue_item(match, i + 1))
+                    queue_data.append(self._format_queue_item(match, i + 1, pair_name_lookup))
                 
                 # Get round info
                 current_round = db.get_current_round(league_night['id'])
@@ -2542,37 +2573,44 @@ class LiveScoreServer:
                 'total_queued': 0
             }
     
-    def _format_match(self, match: dict, games: list) -> dict:
+    def _format_match(self, match: dict, games: list, pair_name_lookup: dict = None) -> dict:
         """Format a match for the web display."""
+        if pair_name_lookup is None:
+            pair_name_lookup = {}
+
         # Team names
         team1 = match['team1_p1_name'] or "TBD"
         if match['team1_p2_name']:
             team1 += f" & {match['team1_p2_name']}"
-        
+
         team2 = match['team2_p1_name'] or "TBD"
         if match['team2_p2_name']:
             team2 += f" & {match['team2_p2_name']}"
-        
+
         # Calculate match score (games won)
         team1_games_won = sum(1 for g in games if g.get('winner_team') == 1)
         team2_games_won = sum(1 for g in games if g.get('winner_team') == 2)
-        
+
         # Get current game scores
         current_game = None
         for g in games:
             if g.get('winner_team', 0) == 0:  # Incomplete game
                 current_game = g
                 break
-        
+
         team1_points = current_game.get('team1_score', 0) if current_game else 0
         team2_points = current_game.get('team2_score', 0) if current_game else 0
-        
+
         # If all games complete, show final game scores
         if not current_game and games:
             last_game = games[-1]
             team1_points = last_game.get('team1_score', 0)
             team2_points = last_game.get('team2_score', 0)
-        
+
+        # AI team names from pair lookup
+        team1_ai_name = pair_name_lookup.get(match.get('pair1_id'), '')
+        team2_ai_name = pair_name_lookup.get(match.get('pair2_id'), '')
+
         return {
             'id': match['id'],
             'team1': team1,
@@ -2583,26 +2621,36 @@ class LiveScoreServer:
             'team2_points': team2_points,
             'table': match.get('table_number', 0),
             'is_finals': match.get('is_finals', False),
-            'best_of': match.get('best_of', 1)
+            'best_of': match.get('best_of', 1),
+            'team1_ai_name': team1_ai_name,
+            'team2_ai_name': team2_ai_name,
         }
     
-    def _format_queue_item(self, match: dict, position: int) -> dict:
+    def _format_queue_item(self, match: dict, position: int, pair_name_lookup: dict = None) -> dict:
         """Format a queued match for the web display."""
+        if pair_name_lookup is None:
+            pair_name_lookup = {}
+
         team1 = match['team1_p1_name'] or "TBD"
         if match['team1_p2_name']:
             team1 += f" & {match['team1_p2_name']}"
-        
+
         team2 = match['team2_p1_name'] or "TBD"
         if match['team2_p2_name']:
             team2 += f" & {match['team2_p2_name']}"
-        
+
+        team1_ai_name = pair_name_lookup.get(match.get('pair1_id'), '')
+        team2_ai_name = pair_name_lookup.get(match.get('pair2_id'), '')
+
         return {
             'id': match['id'],
             'position': position,
             'team1': team1,
             'team2': team2,
             'round': match.get('round_number', 1),
-            'is_finals': match.get('is_finals', False)
+            'is_finals': match.get('is_finals', False),
+            'team1_ai_name': team1_ai_name,
+            'team2_ai_name': team2_ai_name,
         }
     
     def _get_tables_data(self, db, league_night, all_games: dict) -> list:

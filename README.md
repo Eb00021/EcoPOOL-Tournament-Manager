@@ -138,6 +138,14 @@ A comprehensive pool league management application for the WVU EcoCAR team's Thu
 - **Timestamps**: Shows when each event occurred
 - **Game Grouping**: Events organized by game number
 
+### 🤖 AI Team Names
+- **Claude-powered pair names**: When matches are created, Claude AI generates a creative, pool-themed team name for each pair based on their real stats (win streaks, golden breaks, form trend, clutch rating, etc.)
+- **Live badge reveal**: Name badges animate onto each pair card one by one as they arrive from the API
+- **Spectator web view**: Match cards on the live scores page show gold team name badges above player names
+- **Regenerate anytime**: "Regenerate AI Names" button refreshes names for the current night's pairs
+- **Graceful fallback**: If the API key is missing, the `anthropic` package is not installed, or any error occurs, a curated list of 15 pool-themed names is used instead — no crashes, no blank badges
+- Configure in **Settings → AI Team Names**
+
 ### 🌐 Ngrok Public Access
 - **Static domain support**: Use a free ngrok static domain to completely eliminate browser warnings
 - **Auth token integration**: Configure your ngrok auth token for extended sessions
@@ -215,6 +223,38 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+### AI Team Names Setup (Optional)
+
+To enable Claude AI-generated team names for each pair:
+
+1. **Get an Anthropic API key** at [console.anthropic.com](https://console.anthropic.com)
+   - Sign up or log in, then go to API Keys → Create Key
+
+2. **Install the Anthropic SDK**:
+```bash
+pip install anthropic
+```
+
+3. **Configure in the app**:
+   - Go to **Settings → AI Team Names**
+   - Toggle "Enable AI team names" on
+   - Paste your API key and click **Save Key**
+
+4. **Generate matches as normal**:
+   - Match Generator → create pairs → Generate Schedule → Create All Matches
+   - Watch the pair card badges animate in one by one as Claude names each team
+   - The web live scores page (`http://localhost:5000`) will show gold name badges on match cards after the next SSE update
+
+**Alternatively**, set the environment variable before launching:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python3 main.py
+```
+
+> **No API key?** No problem — the app falls back to a built-in list of 15 pool-themed names instantly, with zero errors.
+
+---
 
 ### Google Drive Setup (Optional)
 
@@ -299,6 +339,7 @@ EcoPOOL Toolkit/
 ├── profile_pictures.py     # Profile picture handling
 ├── achievements.py         # Achievement system and badge management
 ├── advanced_stats.py       # Advanced statistics calculations
+├── pair_name_generator.py  # AI pair name generation (Claude API + fallback names)
 ├── venmo_integration.py    # Venmo payment integration
 ├── spectator_reactions.py  # Spectator reaction system
 ├── requirements.txt        # Python dependencies
@@ -377,6 +418,7 @@ SQLite (`ecopool_league.db`) is created on first run. Main tables:
 - **flask** — Live scores web server
 - **qrcode[pil]** — QR code for mobile access to live scores
 - **pyngrok** — Public URL tunneling for remote access
+- **anthropic** — Claude AI API for team name generation (optional, falls back gracefully)
 - **google-api-python-client** — Google Sheets API (optional, for Drive sync)
 - **google-auth** — Google service account authentication (optional, for Drive sync)
 
