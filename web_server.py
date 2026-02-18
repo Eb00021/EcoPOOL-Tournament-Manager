@@ -9,6 +9,7 @@ import time
 import json
 import socket
 import os
+import io
 import atexit
 import signal
 import sys
@@ -2217,10 +2218,10 @@ class LiveScoreServer:
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)})
 
-        # Google Sheet Update endpoint
-        @self.app.route('/api/manager/update-google-sheet', methods=['POST'])
-        def update_google_sheet():
-            """Push current league night scores to Google Sheets."""
+        # Excel Export endpoint
+        @self.app.route('/api/manager/export-excel', methods=['POST'])
+        def export_excel():
+            """Export current league night scores to a downloadable .xlsx file."""
             try:
                 data = request.get_json()
                 session_token = data.get('session_token', '')
@@ -2231,15 +2232,6 @@ class LiveScoreServer:
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'success': False, 'error': 'Database connection failed'}), 500
-
-                creds_path = db.get_setting('google_credentials_path', '')
-                spreadsheet_id = db.get_setting('google_spreadsheet_id', '')
-
-                if not creds_path or not spreadsheet_id:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Google Drive not configured. Set credentials and spreadsheet ID in Settings.'
-                    })
 
                 league_night = db.get_current_league_night()
                 if not league_night:
@@ -2365,20 +2357,19 @@ class LiveScoreServer:
                     date_str = league_night.get('date', '')
                     week_name = f"Week {week_num}" + (f" ({date_str})" if date_str else '')
 
-                from google_drive import GoogleDriveExporter
-                exporter = GoogleDriveExporter(creds_path)
-                exporter.upload_week_data(
-                    spreadsheet_id, week_name,
-                    participants, pairs_export, matchups_export
+                from excel_exporter import ExcelExporter
+                exporter = ExcelExporter()
+                xlsx_bytes = exporter.export_week_data(
+                    week_name, participants, pairs_export, matchups_export
                 )
+                filename = ExcelExporter.safe_filename(week_name)
 
-                return jsonify({'success': True})
-
-            except ImportError as e:
-                return jsonify({
-                    'success': False,
-                    'error': 'Google API libraries not installed. Run: pip install google-api-python-client google-auth'
-                })
+                return send_file(
+                    io.BytesIO(xlsx_bytes),
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    as_attachment=True,
+                    download_name=filename
+                )
             except Exception as e:
                 import traceback
                 traceback.print_exc()

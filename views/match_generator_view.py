@@ -375,12 +375,12 @@ class MatchGeneratorView(ctk.CTkFrame):
 
         self.upload_drive_btn = ctk.CTkButton(
             btn_frame,
-            text="Upload to Drive",
+            text="Export Excel",
             font=get_font(12),
             height=35,
             fg_color="#1a73e8",
             hover_color="#1557b0",
-            command=self.upload_to_google_drive,
+            command=self.export_to_excel,
             state="disabled"
         )
         self.upload_drive_btn.pack(side="left", fill="x", expand=True, padx=5)
@@ -1128,38 +1128,32 @@ class MatchGeneratorView(ctk.CTkFrame):
             else:
                 messagebox.showerror("Error", "Failed to export schedule.")
     
-    def upload_to_google_drive(self):
-        """Upload the current schedule to Google Sheets."""
+    def export_to_excel(self):
+        """Export the current schedule to a local .xlsx file."""
         if not self.generated_schedule:
             return
 
-        creds_path = self.db.get_setting('google_credentials_path', '')
-        sheet_id = self.db.get_setting('google_spreadsheet_id', '')
-
-        if not creds_path or not sheet_id:
-            messagebox.showerror(
-                "Not Configured",
-                "Google Drive is not configured.\n\n"
-                "Go to Settings and set the service account credentials file "
-                "and spreadsheet ID."
-            )
-            return
-
-        # Prompt for week name
         from tkinter import simpledialog
         week_name = simpledialog.askstring(
             "Week Name",
-            "Enter the sheet tab name (e.g. 'Week 1 (1/29)'):",
+            "Enter the week name (e.g. 'Week 1 (1/29)'):",
             initialvalue=f"Week {datetime.now().strftime('%m/%d')}"
         )
         if not week_name:
             return
 
+        from excel_exporter import ExcelExporter
+        default_filename = ExcelExporter.safe_filename(week_name)
+        filepath = filedialog.asksaveasfilename(
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx')],
+            initialfile=default_filename,
+            title='Save Excel File'
+        )
+        if not filepath:
+            return
+
         try:
-            from google_drive import GoogleDriveExporter
-
-            pair_names = self.generator.get_pair_display_names(self.current_pairs)
-
             # Build participants
             participants = []
             seen = set()
@@ -1205,18 +1199,13 @@ class MatchGeneratorView(ctk.CTkFrame):
                     'team2_num': match['pair2_idx'] + 1,
                 })
 
-            exporter = GoogleDriveExporter(creds_path)
-            exporter.upload_week_data(sheet_id, week_name, participants, pairs_data, matchups)
-            messagebox.showinfo("Success", f"Schedule uploaded to Google Sheets\nSheet: {week_name}")
+            xlsx_bytes = ExcelExporter().export_week_data(week_name, participants, pairs_data, matchups)
+            with open(filepath, 'wb') as f:
+                f.write(xlsx_bytes)
+            messagebox.showinfo("Success", f"Schedule exported to:\n{filepath}")
 
-        except ImportError:
-            messagebox.showerror(
-                "Missing Libraries",
-                "Google API libraries not installed.\n\n"
-                "Run: pip install google-api-python-client google-auth"
-            )
         except Exception as e:
-            messagebox.showerror("Upload Failed", f"Error uploading to Google Sheets:\n{e}")
+            messagebox.showerror("Export Failed", f"Error exporting to Excel:\n{e}")
 
     def create_all_matches(self):
         """Create all matches in the database."""

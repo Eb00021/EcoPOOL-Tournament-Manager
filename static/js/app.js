@@ -431,8 +431,8 @@
                                     <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
                                         💳 Payment Portal
                                     </button>
-                                    <button id="google-sheet-btn" onclick="updateGoogleSheet()" style="background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
-                                        📊 Update Google Sheet
+                                    <button id="export-excel-btn" onclick="exportToExcel()" style="background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                        📊 Export Excel
                                     </button>
                                 </div>
                             </div>
@@ -2001,31 +2001,44 @@
             window.open('/admin/payments/login', '_blank');
         }
 
-        async function updateGoogleSheet() {
-            const btn = document.getElementById('google-sheet-btn');
+        async function exportToExcel() {
+            const btn = document.getElementById('export-excel-btn');
             if (!btn) return;
 
             const originalText = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '⏳ Updating...';
+            btn.innerHTML = '⏳ Exporting...';
 
             try {
-                const response = await fetch('/api/manager/update-google-sheet', {
+                const response = await fetch('/api/manager/export-excel', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({session_token: managerSessionToken})
                 });
-                const data = await response.json();
-                if (data.success) {
-                    btn.innerHTML = '✅ Updated!';
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const disposition = response.headers.get('Content-Disposition') || '';
+                    const match = disposition.match(/filename="?([^"]+)"?/);
+                    const filename = match ? match[1] : 'week_data.xlsx';
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    btn.innerHTML = '✅ Downloaded!';
                     setTimeout(() => { btn.innerHTML = originalText; btn.disabled = false; }, 2000);
                 } else {
-                    alert('Google Sheet update failed: ' + (data.error || 'Unknown error'));
+                    const data = await response.json();
+                    alert('Excel export failed: ' + (data.error || 'Unknown error'));
                     btn.innerHTML = originalText;
                     btn.disabled = false;
                 }
             } catch (err) {
-                alert('Google Sheet update failed: ' + err.message);
+                alert('Excel export failed: ' + err.message);
                 btn.innerHTML = originalText;
                 btn.disabled = false;
             }
