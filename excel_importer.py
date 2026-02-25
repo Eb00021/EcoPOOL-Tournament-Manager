@@ -148,7 +148,7 @@ class ExcelImporter:
         conn.commit()
 
         # Parse pairs and their per-match scores
-        pairs_data = self._parse_pairs(ws, ln_id, name_to_id)
+        pairs_data = self._parse_pairs(ws, ln_id, name_to_id, season_id)
         if not pairs_data:
             return 0
 
@@ -162,7 +162,7 @@ class ExcelImporter:
         return match_count
 
     def _parse_pairs(self, ws, league_night_id: int,
-                     name_to_id: dict[str, int]) -> dict[int, dict]:
+                     name_to_id: dict[str, int], season_id: int) -> dict[int, dict]:
         """Parse the Partners section of a week sheet.
 
         Returns a dict mapping team_number -> {
@@ -222,6 +222,8 @@ class ExcelImporter:
             # Create pair in DB
             pair_name = p1_name if p2_id is None else f"{p1_name} & {p2_name}"
             pair_id = self.db.create_pair(league_night_id, p1_id, p2_id, pair_name)
+            if p2_id is not None:
+                self.db.record_teammate_pair(season_id, p1_id, p2_id)
 
             pairs[team_num] = {
                 'pair_id': pair_id,
