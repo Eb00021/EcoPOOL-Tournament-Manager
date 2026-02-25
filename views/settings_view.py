@@ -677,8 +677,11 @@ class SettingsView(ctk.CTkFrame):
             text_color='#aaaaaa'
         ).pack(anchor='w', pady=(2, 8))
 
+        import_row = ctk.CTkFrame(data_inner, fg_color='transparent')
+        import_row.pack(anchor='w', fill='x')
+
         ctk.CTkButton(
-            data_inner,
+            import_row,
             text='Import Excel Workbook',
             font=get_font(11),
             fg_color='#2d7a3e',
@@ -686,7 +689,18 @@ class SettingsView(ctk.CTkFrame):
             height=35,
             width=200,
             command=self._import_excel_workbook
-        ).pack(anchor='w')
+        ).pack(side='left', padx=(0, 10))
+
+        ctk.CTkButton(
+            import_row,
+            text='Clear Leaderboard',
+            font=get_font(11),
+            fg_color='#7a2d2d',
+            hover_color='#5f1a1a',
+            height=35,
+            width=160,
+            command=self._clear_leaderboard
+        ).pack(side='left')
 
         # Separator
         ctk.CTkFrame(data_inner, height=1, fg_color='#444444').pack(fill='x', pady=15)
@@ -902,6 +916,21 @@ class SettingsView(ctk.CTkFrame):
                     self.on_data_change()
             else:
                 messagebox.showerror("Error", message)
+
+    def _clear_leaderboard(self):
+        """Clear all match/game data so a fresh import doesn't accumulate scores."""
+        result = messagebox.askyesno(
+            "Clear Leaderboard",
+            "This will delete ALL match history, game scores, and league night data.\n\n"
+            "Player accounts will be kept.\n\n"
+            "Continue?",
+            icon="warning"
+        )
+        if result:
+            self.db.reset_leaderboard()
+            messagebox.showinfo("Cleared", "Leaderboard data has been cleared.")
+            if self.on_data_change:
+                self.on_data_change()
 
     def _import_excel_workbook(self):
         """Import data from an Excel workbook."""
