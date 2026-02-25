@@ -202,22 +202,29 @@ class ExcelImporter:
             p2_last = ws.cell(row=row + 1, column=3).value
 
             if not p1_first or not p1_last:
-                row += 2
-                continue
+                # Some hand-built sheets put a solo player's name in the partner row
+                if p2_first and p2_last:
+                    p1_first, p1_last = p2_first, p2_last
+                    p2_first, p2_last = None, None
+                else:
+                    row += 2
+                    continue
 
             p1_name = f"{str(p1_first).strip()} {str(p1_last).strip()}"
             p1_id = name_to_id.get(p1_name)
             if p1_id is None:
-                _logger.warning(f"Player not found: {p1_name}")
-                row += 2
-                continue
+                _logger.info(f"Creating new player from week sheet: {p1_name}")
+                p1_id = self.db.add_player(p1_name)
+                name_to_id[p1_name] = p1_id
 
             p2_id = None
             if p2_first and p2_last:
                 p2_name = f"{str(p2_first).strip()} {str(p2_last).strip()}"
                 p2_id = name_to_id.get(p2_name)
                 if p2_id is None:
-                    _logger.warning(f"Player not found: {p2_name}")
+                    _logger.info(f"Creating new player from week sheet: {p2_name}")
+                    p2_id = self.db.add_player(p2_name)
+                    name_to_id[p2_name] = p2_id
 
             # Create pair in DB
             pair_name = p1_name if p2_id is None else f"{p1_name} & {p2_name}"
@@ -230,7 +237,6 @@ class ExcelImporter:
                 'player1_id': p1_id,
                 'player2_id': p2_id,
                 'scores': scores,
-                'match_counter': 0,
             }
 
             row += 2
@@ -282,6 +288,10 @@ class ExcelImporter:
         """
         match_count = 0
 
+        # Build a stable mapping: set_number → score array index (0-based)
+        unique_sets = sorted({s for s, _, _ in matchups})
+        set_to_idx = {s: i for i, s in enumerate(unique_sets)}
+
         for set_num, team1_num, team2_num in matchups:
             pair1 = pairs_data.get(team1_num)
             pair2 = pairs_data.get(team2_num)
@@ -290,16 +300,10 @@ class ExcelImporter:
                 _logger.warning(f"Skipping matchup: team {team1_num} vs {team2_num} (pair not found)")
                 continue
 
-            # Get scores using each pair's match counter
-            idx1 = pair1['match_counter']
-            idx2 = pair2['match_counter']
-
-            team1_score = pair1['scores'][idx1] if idx1 < len(pair1['scores']) else 0
-            team2_score = pair2['scores'][idx2] if idx2 < len(pair2['scores']) else 0
-
-            # Advance counters
-            pair1['match_counter'] += 1
-            pair2['match_counter'] += 1
+            # Use the set number's position among unique sets as the score column index
+            score_idx = set_to_idx.get(set_num, 0)
+            team1_score = pair1['scores'][score_idx] if score_idx < len(pair1['scores']) else 0
+            team2_score = pair2['scores'][score_idx] if score_idx < len(pair2['scores']) else 0
 
             # Determine winner (higher score wins)
             if team1_score > team2_score:
