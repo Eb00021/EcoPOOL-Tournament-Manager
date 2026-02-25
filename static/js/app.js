@@ -427,14 +427,9 @@
                         <div id="manager-panel" class="manager-panel active">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                                 <h2 style="margin: 0;">🔧 Manager Mode - Score Entry</h2>
-                                <div style="display: flex; gap: 8px;">
-                                    <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
-                                        💳 Payment Portal
-                                    </button>
-                                    <button id="export-excel-btn" onclick="exportToExcel()" style="background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
-                                        📊 Export Excel
-                                    </button>
-                                </div>
+                                <button onclick="openPaymentPortal()" style="background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;">
+                                    💳 Payment Portal
+                                </button>
                             </div>
                             
                             <div class="manager-match-selector">
