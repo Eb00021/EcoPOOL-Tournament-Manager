@@ -1550,11 +1550,15 @@
         function openRulesModal() {
             haptic('modalOpen');
             document.getElementById('rules-modal').classList.add('active');
+            const reactionBar = document.querySelector('.reaction-bar');
+            if (reactionBar) reactionBar.style.display = 'none';
         }
 
         function closeRulesModal() {
             haptic('modalClose');
             document.getElementById('rules-modal').classList.remove('active');
+            const reactionBar = document.querySelector('.reaction-bar');
+            if (reactionBar) reactionBar.style.display = '';
         }
 
         // Close rules modal on background click
