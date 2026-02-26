@@ -2881,6 +2881,14 @@ class LiveScoreServer:
             # Find an available port
             self.port = self._find_available_port(self.port)
 
+            # Reset shutdown/update events for a fresh start
+            self._shutdown_event.clear()
+            self._update_event.clear()
+
+            # Re-register in active servers if a previous stop() removed it
+            if self not in _active_servers:
+                _active_servers.append(self)
+
             self.running = True
             self.server_thread = threading.Thread(
                 target=self._run_server,
