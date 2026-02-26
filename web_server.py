@@ -2968,7 +2968,7 @@ class LiveScoreServer:
     def _run_server(self):
         """Run the Flask server (called in background thread)."""
         try:
-            self._werkzeug_server = make_server('0.0.0.0', self.port, self.app)
+            self._werkzeug_server = make_server('0.0.0.0', self.port, self.app, threaded=True)
             self._werkzeug_server.serve_forever()
         except Exception as e:
             print(f"Web server error: {e}")
