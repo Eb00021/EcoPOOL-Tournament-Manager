@@ -2175,7 +2175,10 @@
                     // Show queue
                     html += `
                         <div class="manager-queue-section">
-                            <div class="section-label">Matches in Queue (${queue.length})</div>
+                            <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;">
+                                <span>Matches in Queue (${queue.length})</span>
+                                <button class="manager-btn" style="font-size:0.8em;padding:4px 10px;" onclick="trimQueue()">Trim Queue</button>
+                            </div>
                     `;
                     
                     if (queue.length === 0) {
@@ -2213,6 +2216,42 @@
                 });
         }
         
+        function trimQueue() {
+            if (!managerAuthenticated) {
+                alert('Manager mode not authenticated');
+                return;
+            }
+
+            const sessionToken = sessionStorage.getItem('manager_session_token');
+            if (!sessionToken) {
+                handleSessionExpired();
+                return;
+            }
+
+            if (!confirm('Remove excess queued games so each team plays at most 4? This affects queued games only.')) return;
+
+            fetch('/api/manager/trim-queue', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ session_token: sessionToken, max_games: 4 })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`Removed ${data.deleted} excess queued match${data.deleted !== 1 ? 'es' : ''}. Queue now has ${data.queue_length} match${data.queue_length !== 1 ? 'es' : ''}.`);
+                    lastQueuePanelHash = '';
+                    loadManagerQueuePanel();
+                    fetch('/api/scores').then(r => r.json()).then(updateUI).catch(console.error);
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to trim queue'));
+                }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Failed to trim queue');
+            });
+        }
+
         function completeMatch(matchId, tableNumber) {
             if (!managerAuthenticated) {
                 alert('Manager mode not authenticated');

@@ -1292,6 +1292,80 @@ class DatabaseManager:
         ''', (league_night_id,))
         return [dict(row) for row in cursor.fetchall()]
     
+    def trim_excess_queued_matches(self, league_night_id: int, max_games: int = 4) -> int:
+        """Delete queued matches where both pairs already have >= max_games played or scheduled.
+
+        Only counts live and completed matches as fixed; walks the queued matches in
+        queue_position order, keeping each one unless both pairs already reached max_games.
+        Re-sequences queue_position on survivors and returns the number of deleted matches.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT id, status, queue_position,
+                   pair1_id, pair2_id,
+                   team1_player1_id, team1_player2_id,
+                   team2_player1_id, team2_player2_id
+            FROM matches
+            WHERE league_night_id = ?
+            ORDER BY queue_position, id
+        ''', (league_night_id,))
+        all_matches = [dict(row) for row in cursor.fetchall()]
+
+        def get_pair_key(m, side):
+            if side == 1:
+                pid = m.get('pair1_id')
+                if pid:
+                    return ('id', pid)
+                return ('players', frozenset(filter(None, [m.get('team1_player1_id'), m.get('team1_player2_id')])))
+            else:
+                pid = m.get('pair2_id')
+                if pid:
+                    return ('id', pid)
+                return ('players', frozenset(filter(None, [m.get('team2_player1_id'), m.get('team2_player2_id')])))
+
+        # Count games from live + completed matches
+        games_per_pair = {}
+        queued_matches = []
+        for m in all_matches:
+            if m['status'] in ('live', 'completed'):
+                k1 = get_pair_key(m, 1)
+                k2 = get_pair_key(m, 2)
+                games_per_pair[k1] = games_per_pair.get(k1, 0) + 1
+                games_per_pair[k2] = games_per_pair.get(k2, 0) + 1
+            elif m['status'] == 'queued':
+                queued_matches.append(m)
+
+        # Walk queued matches; collect ids to delete
+        ids_to_delete = []
+        survivors = []
+        for m in queued_matches:
+            k1 = get_pair_key(m, 1)
+            k2 = get_pair_key(m, 2)
+            if games_per_pair.get(k1, 0) >= max_games and games_per_pair.get(k2, 0) >= max_games:
+                ids_to_delete.append(m['id'])
+            else:
+                survivors.append(m)
+                games_per_pair[k1] = games_per_pair.get(k1, 0) + 1
+                games_per_pair[k2] = games_per_pair.get(k2, 0) + 1
+
+        if ids_to_delete:
+            cursor.execute(
+                f'DELETE FROM matches WHERE id IN ({",".join("?" * len(ids_to_delete))})',
+                ids_to_delete
+            )
+
+        # Re-sequence queue_position on survivors
+        for new_pos, m in enumerate(survivors):
+            cursor.execute(
+                'UPDATE matches SET queue_position = ? WHERE id = ?',
+                (new_pos, m['id'])
+            )
+
+        conn.commit()
+        return len(ids_to_delete)
+
     def get_live_matches(self, league_night_id: int) -> list[dict]:
         """Get all live matches for a league night."""
         conn = self.get_connection()

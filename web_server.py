@@ -2375,6 +2375,35 @@ class LiveScoreServer:
                 traceback.print_exc()
                 return jsonify({'success': False, 'error': str(e)})
 
+        @self.app.route('/api/manager/trim-queue', methods=['POST'])
+        def trim_queue():
+            """Remove queued matches where both pairs already have enough games."""
+            try:
+                data = request.get_json()
+                session_token = data.get('session_token', '')
+                max_games = int(data.get('max_games', 4))
+
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+                db = self._get_thread_db()
+                if db is None:
+                    return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+
+                league_night = db.get_current_league_night()
+                if not league_night:
+                    return jsonify({'success': False, 'error': 'No active league night'})
+
+                deleted = db.trim_excess_queued_matches(league_night['id'], max_games=max_games)
+                self.notify_update()
+
+                queue = db.get_queued_matches(league_night['id'])
+                return jsonify({'success': True, 'deleted': deleted, 'queue_length': len(queue)})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)}), 500
+
         # Spectator Reactions API endpoints
         @self.app.route('/api/reaction', methods=['POST'])
         def add_reaction():
