@@ -292,12 +292,7 @@
                         }
                         
                         // Check for new reactions
-                        if (data.reactions && data.reactions.length > 0) {
-                            const latest = data.reactions[data.reactions.length - 1];
-                            if (latest) {
-                                showLocalReaction(latest.emoji);
-                            }
-                        }
+                        handleReactionEvent(data);
                     } catch (parseError) {
                         console.error('Error parsing SSE data:', parseError);
                     }
@@ -771,8 +766,9 @@
         
         function loadScorecardData(matchId, isManagerMode) {
             const content = document.getElementById('scorecard-content');
-            const endpoint = isManagerMode ? `/api/manager/match/${matchId}` : `/api/match/${matchId}`;
-            
+            const token = sessionStorage.getItem('manager_session_token');
+            const endpoint = isManagerMode ? `/api/manager/match/${matchId}?session_token=${encodeURIComponent(token)}` : `/api/match/${matchId}`;
+
             fetch(endpoint)
                 .then(r => r.json())
                 .then(data => {
@@ -2012,7 +2008,7 @@
                 const response = await fetch('/api/manager/export-excel', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({session_token: managerSessionToken})
+                    body: JSON.stringify({session_token: sessionStorage.getItem('manager_session_token')})
                 });
 
                 if (response.ok) {
@@ -2085,7 +2081,8 @@
                 return;
             }
             
-            fetch('/api/manager/available-tables')
+            const token = sessionStorage.getItem('manager_session_token');
+            fetch(`/api/manager/available-tables?session_token=${encodeURIComponent(token)}`)
                 .then(r => {
                     if (!r.ok) {
                         throw new Error(`HTTP error! status: ${r.status}`);
@@ -2175,9 +2172,8 @@
                     // Show queue
                     html += `
                         <div class="manager-queue-section">
-                            <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;">
+                            <div class="section-label">
                                 <span>Matches in Queue (${queue.length})</span>
-                                <button class="manager-btn" style="font-size:0.8em;padding:4px 10px;" onclick="trimQueue()">Trim Queue</button>
                             </div>
                     `;
                     
@@ -2216,42 +2212,6 @@
                 });
         }
         
-        function trimQueue() {
-            if (!managerAuthenticated) {
-                alert('Manager mode not authenticated');
-                return;
-            }
-
-            const sessionToken = sessionStorage.getItem('manager_session_token');
-            if (!sessionToken) {
-                handleSessionExpired();
-                return;
-            }
-
-            if (!confirm('Remove excess queued games so each team plays at most 4? This affects queued games only.')) return;
-
-            fetch('/api/manager/trim-queue', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ session_token: sessionToken, max_games: 4 })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    alert(`Removed ${data.deleted} excess queued match${data.deleted !== 1 ? 'es' : ''}. Queue now has ${data.queue_length} match${data.queue_length !== 1 ? 'es' : ''}.`);
-                    lastQueuePanelHash = '';
-                    loadManagerQueuePanel();
-                    fetch('/api/scores').then(r => r.json()).then(updateUI).catch(console.error);
-                } else {
-                    alert('Error: ' + (data.error || 'Failed to trim queue'));
-                }
-            })
-            .catch(err => {
-                console.error('Error:', err);
-                alert('Failed to trim queue');
-            });
-        }
-
         function completeMatch(matchId, tableNumber) {
             if (!managerAuthenticated) {
                 alert('Manager mode not authenticated');
@@ -2352,7 +2312,8 @@
                 return;
             }
             
-            fetch(`/api/manager/match/${matchId}`)
+            const token = sessionStorage.getItem('manager_session_token');
+            fetch(`/api/manager/match/${matchId}?session_token=${encodeURIComponent(token)}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.error) {
@@ -2992,6 +2953,7 @@
         let reactionCooldown = false;
         let pendingReactionType = null;  // Track type before SSE arrives
         let lastLocalReactionId = null;  // Track to avoid showing duplicates from SSE
+        let lastSeenReactionId = null;  // Track highest reaction ID seen via SSE
 
         function sendReaction(type, event) {
             if (reactionCooldown) return;
@@ -3073,15 +3035,19 @@
             setTimeout(() => reaction.remove(), 3000);
         }
         
-        // Listen for reactions from SSE
-        function handleReactionEvent(event) {
+        // Handle reactions from SSE (called with already-parsed data)
+        function handleReactionEvent(data) {
             try {
-                const data = JSON.parse(event.data);
                 if (data.reactions && Array.isArray(data.reactions)) {
-                    // Show the latest reaction
                     const latest = data.reactions[data.reactions.length - 1];
                     if (latest) {
-                        // Skip if we already showed this reaction locally
+                        // Skip if already seen this reaction in a previous SSE update
+                        if (lastSeenReactionId !== null && latest.id <= lastSeenReactionId) {
+                            return;
+                        }
+                        lastSeenReactionId = latest.id;
+
+                        // Skip if we already showed this reaction locally (sender)
                         if (latest.id === lastLocalReactionId) {
                             lastLocalReactionId = null;
                             return;

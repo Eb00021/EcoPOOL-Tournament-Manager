@@ -588,6 +588,10 @@ class LiveScoreServer:
         def get_manager_match(match_id):
             """Get match data for manager mode."""
             try:
+                session_token = request.args.get('session_token')
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'error': 'Database connection failed'}), 500
@@ -1618,6 +1622,10 @@ class LiveScoreServer:
         def get_available_tables():
             """Get list of available tables (not currently running a live match)."""
             try:
+                session_token = request.args.get('session_token')
+                if not self._validate_manager_session(session_token):
+                    return jsonify({'error': 'Unauthorized'}), 401
+
                 db = self._get_thread_db()
                 if db is None:
                     return jsonify({'error': 'Database connection failed'}), 500
