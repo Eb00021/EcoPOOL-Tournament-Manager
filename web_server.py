@@ -18,6 +18,8 @@ import hmac
 import hashlib
 from datetime import datetime
 from flask import Flask, Response, render_template, jsonify, send_file, abort, request
+from werkzeug.serving import make_server
+import socket as _socket
 import logging
 
 # Suppress Flask's default logging to keep console clean
@@ -119,6 +121,7 @@ class LiveScoreServer:
         
         self.server_thread = None
         self.running = False
+        self._werkzeug_server = None
         self._last_data_hash = None
         self._update_event = threading.Event()
         self._shutdown_event = threading.Event()
@@ -2896,8 +2899,20 @@ class LiveScoreServer:
             )
             self.server_thread.start()
 
-            # Wait a moment for server to start
-            time.sleep(0.5)
+            # Wait for server to be ready (poll instead of blind sleep)
+            deadline = time.time() + 5.0
+            ready = False
+            while time.time() < deadline:
+                try:
+                    with _socket.create_connection(('127.0.0.1', self.port), timeout=0.2):
+                        ready = True
+                        break
+                except (ConnectionRefusedError, OSError):
+                    time.sleep(0.1)
+
+            if not ready:
+                self.running = False
+                return False, "Server failed to start (port not responding)"
 
             # Check if ngrok is enabled
             ngrok_enabled = self.db.get_setting('ngrok_enabled', 'false') == 'true'
@@ -2945,14 +2960,8 @@ class LiveScoreServer:
     def _run_server(self):
         """Run the Flask server (called in background thread)."""
         try:
-            # Use debug=False and don't use reloader to avoid hanging
-            self.app.run(
-                host='0.0.0.0',
-                port=self.port,
-                threaded=True,
-                use_reloader=False,
-                debug=False
-            )
+            self._werkzeug_server = make_server('0.0.0.0', self.port, self.app)
+            self._werkzeug_server.serve_forever()
         except Exception as e:
             print(f"Web server error: {e}")
             self.running = False
@@ -2962,6 +2971,10 @@ class LiveScoreServer:
         self.running = False
         self._shutdown_event.set()  # Signal shutdown to SSE streams
         self._update_event.set()  # Wake up any waiting threads
+
+        if self._werkzeug_server:
+            self._werkzeug_server.shutdown()
+            self._werkzeug_server = None
 
         # Stop ngrok tunnel if active
         if NGROK_AVAILABLE:
