@@ -174,6 +174,78 @@ class MatchGenerator:
 
     # ============ Full Schedule Generation ============
 
+    def _build_best_round(self, pairs, games_per_pair, last_round_played,
+                          current_round_num, max_matches, min_games_per_pair,
+                          matchup_counts, tonight_matchups, total_matchups_used):
+        """
+        Find the best complete round by evaluating all valid non-conflicting
+        combinations of matchups (backtracking search).
+
+        Strongly penalises matchups already scheduled tonight so the algorithm
+        naturally prefers unique matchups, but will still fill a complete round
+        even if some repetition is unavoidable.  Records the best partial round
+        as a fallback in case a full round cannot be completed.
+        """
+        n_pairs = len(pairs)
+
+        def score_matchup(i, j):
+            pair1, pair2 = pairs[i], pairs[j]
+            matchup_key = self._create_matchup_key(pair1, pair2)
+            historical = matchup_counts.get(matchup_key, 0)
+            tonight = tonight_matchups.get(matchup_key, 0)
+            need = ((min_games_per_pair - games_per_pair[i]) +
+                    (min_games_per_pair - games_per_pair[j]))
+            idle = ((current_round_num - last_round_played[i]) +
+                    (current_round_num - last_round_played[j]))
+            # Large penalty for repeating a tonight matchup, but don't exclude
+            # outright – the algorithm must still be able to fill complete rounds.
+            repeat_penalty = 10000 if (i, j) in total_matchups_used else 0
+            return historical + (tonight * 10) + repeat_penalty - need - (idle * 5)
+
+        # Sort all possible matchups: best (lowest) score first so backtracking
+        # explores the most promising combinations early.
+        all_scored = sorted(
+            [(i, j, score_matchup(i, j))
+             for i in range(n_pairs) for j in range(i + 1, n_pairs)],
+            key=lambda x: x[2]
+        )
+
+        best_round: list = []
+        best_score: float = float('inf')
+
+        def backtrack(start_idx, current_round, pairs_used, current_score):
+            nonlocal best_round, best_score
+
+            if len(current_round) == max_matches:
+                if current_score < best_score:
+                    best_score = current_score
+                    best_round = current_round[:]
+                return
+
+            for idx in range(start_idx, len(all_scored)):
+                i, j, score = all_scored[idx]
+                if i in pairs_used or j in pairs_used:
+                    continue
+                current_round.append((i, j))
+                pairs_used.add(i)
+                pairs_used.add(j)
+                backtrack(idx + 1, current_round, pairs_used, current_score + score)
+                current_round.pop()
+                pairs_used.discard(i)
+                pairs_used.discard(j)
+
+            # If no complete round was found yet, record the best partial we
+            # managed at this recursion depth as a fallback.
+            if len(best_round) < max_matches:
+                if (len(current_round) > len(best_round) or
+                        (len(current_round) == len(best_round) and
+                         current_score < best_score)):
+                    best_score = current_score
+                    best_round = current_round[:]
+
+        backtrack(0, [], set(), 0)
+        return best_round
+
     def generate_full_schedule(self, pairs: list[tuple[int, Optional[int]]],
                                min_games_per_pair: int = 4,
                                table_count: int = 3,
@@ -223,102 +295,48 @@ class MatchGenerator:
 
         while min(games_per_pair.values()) < min_games_per_pair:
             current_round_num += 1
-            # Generate one round
-            round_matches = []
-            pairs_used_this_round = set()
-
-            # Try to fill this round with as many matches as possible
-            # Limited by table_count and available pairs
             max_matches_in_round = min(table_count, len(pairs) // 2)
 
-            # Find best matchups for this round
-            available_matchups = []
-            for p1_idx, p2_idx in all_matchups:
-                if (p1_idx, p2_idx) in total_matchups_used:
-                    continue  # Already scheduled tonight
+            # Build the best complete round using backtracking over all valid
+            # combinations. This avoids the greedy pitfall of stranding pairs
+            # that have no valid opponent left in the round.
+            round_matches = self._build_best_round(
+                pairs, games_per_pair, last_round_played,
+                current_round_num, max_matches_in_round, min_games_per_pair,
+                matchup_counts, tonight_matchups, total_matchups_used
+            )
 
-                pair1 = pairs[p1_idx]
-                pair2 = pairs[p2_idx]
-                matchup_key = self._create_matchup_key(pair1, pair2)
+            if not round_matches:
+                break
 
-                historical_count = matchup_counts.get(matchup_key, 0)
-                tonight_count = tonight_matchups.get(matchup_key, 0)
-
-                # Prioritize pairs that need more games
-                need_score = (min_games_per_pair - games_per_pair[p1_idx]) + \
-                            (min_games_per_pair - games_per_pair[p2_idx])
-
-                # Idle penalty: prefer pairs that have been sitting out
-                idle_rounds_p1 = current_round_num - last_round_played[p1_idx]
-                idle_rounds_p2 = current_round_num - last_round_played[p2_idx]
-                idle_penalty = -(idle_rounds_p1 + idle_rounds_p2) * 5
-
-                # Score: lower is better (less repeats, more need, more idle)
-                score = historical_count + (tonight_count * 10) - need_score + idle_penalty
-
-                available_matchups.append((p1_idx, p2_idx, score))
-
-            # Sort by score (best matchups first)
-            available_matchups.sort(key=lambda x: x[2])
-
-            # Select matches for this round, ensuring no pair conflicts
-            for p1_idx, p2_idx, score in available_matchups:
-                if len(round_matches) >= max_matches_in_round:
-                    break
-
-                # Check if either pair is already in this round
-                if p1_idx in pairs_used_this_round or p2_idx in pairs_used_this_round:
-                    continue
-
-                # Add match to round
-                round_matches.append((p1_idx, p2_idx))
-                pairs_used_this_round.add(p1_idx)
-                pairs_used_this_round.add(p2_idx)
+            # Update tracking state
+            for p1_idx, p2_idx in round_matches:
                 total_matchups_used.add((p1_idx, p2_idx))
                 games_per_pair[p1_idx] += 1
                 games_per_pair[p2_idx] += 1
-
-                # Track tonight's matchups
                 pair1 = pairs[p1_idx]
                 pair2 = pairs[p2_idx]
                 matchup_key = self._create_matchup_key(pair1, pair2)
                 tonight_matchups[matchup_key] = tonight_matchups.get(matchup_key, 0) + 1
-
-            # Update last_round_played for pairs in this round
-            for p1_idx, p2_idx in round_matches:
                 last_round_played[p1_idx] = current_round_num
                 last_round_played[p2_idx] = current_round_num
 
-            if not round_matches:
-                # No more matches possible without repeats, allow repeats
-                # Find pairs that still need games and create matchups
-                pairs_needing_games = [i for i, count in games_per_pair.items()
-                                       if count < min_games_per_pair]
-
-                if len(pairs_needing_games) < 2:
-                    break  # Can't create more matches
-
-                # Just pair up the pairs that need games
-                for i in range(0, len(pairs_needing_games) - 1, 2):
-                    if len(round_matches) >= max_matches_in_round:
-                        break
-
-                    p1_idx = pairs_needing_games[i]
-                    p2_idx = pairs_needing_games[i + 1]
-
-                    if p1_idx in pairs_used_this_round or p2_idx in pairs_used_this_round:
-                        continue
-
-                    round_matches.append((p1_idx, p2_idx))
-                    pairs_used_this_round.add(p1_idx)
-                    pairs_used_this_round.add(p2_idx)
-                    games_per_pair[p1_idx] += 1
-                    games_per_pair[p2_idx] += 1
-
-                if not round_matches:
-                    break  # Still no matches possible
-
             rounds.append(round_matches)
+
+        # Post-process: remove matches where both pairs already have enough games
+        trimmed_games = {i: 0 for i in range(len(pairs))}
+        trimmed_rounds = []
+        for round_matches in rounds:
+            trimmed_round = []
+            for p1_idx, p2_idx in round_matches:
+                if (trimmed_games[p1_idx] < min_games_per_pair or
+                        trimmed_games[p2_idx] < min_games_per_pair):
+                    trimmed_round.append((p1_idx, p2_idx))
+                    trimmed_games[p1_idx] += 1
+                    trimmed_games[p2_idx] += 1
+            if trimmed_round:
+                trimmed_rounds.append(trimmed_round)
+        rounds = trimmed_rounds
 
         # Create match data with round numbers
         matches = []
